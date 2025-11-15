@@ -124,6 +124,10 @@ class Car:
         self.height = 15  # car height for 3D
         self.hood_height = 10  # camera mount height
 
+        # Wheel rotation tracking for animation
+        self.wheel_rotation = 0.0  # Current wheel rotation angle in radians
+        self.wheel_radius = 4  # Wheel radius for rotation calculation
+
     def update(self, dt, keys, lka_steering=None, lka_controller=None):
         """Update car state based on Ackermann steering model"""
         # Handle acceleration
@@ -180,6 +184,12 @@ class Car:
             self.theta += omega * dt
             self.theta = np.arctan2(np.sin(self.theta), np.cos(self.theta))
 
+            # Update wheel rotation based on distance traveled
+            # Negate to fix backwards rotation
+            distance_traveled = self.velocity * dt
+            self.wheel_rotation -= distance_traveled / self.wheel_radius
+            self.wheel_rotation = self.wheel_rotation % (2 * np.pi)  # Keep in [0, 2π]
+
             # Check for collision and revert if off-track (handled in main loop)
             self.prev_x = prev_x
             self.prev_y = prev_y
@@ -204,17 +214,17 @@ class Car:
         return (left_wheel_x, left_wheel_y), (right_wheel_x, right_wheel_y)
 
     def get_hood_camera_position(self):
-        """Get position and orientation for hood camera"""
-        # Camera at front of car, slightly above hood
-        cam_x = self.x + (self.length/2 - 10) * np.cos(self.theta)
-        cam_y = self.y + (self.length/2 - 10) * np.sin(self.theta)
+        """Get position and orientation for center-of-car first-person camera"""
+        # Camera at center of car, at eye level
+        cam_x = self.x
+        cam_y = self.y
         cam_z = self.hood_height
 
         # Look-at point ahead of car
-        look_distance = 50
+        look_distance = 100
         look_x = self.x + look_distance * np.cos(self.theta)
         look_y = self.y + look_distance * np.sin(self.theta)
-        look_z = self.hood_height
+        look_z = self.hood_height - 2  # Look slightly down
 
         return (cam_x, cam_y, cam_z), (look_x, look_y, look_z)
 
@@ -239,6 +249,19 @@ class Car:
 
         # Draw wheels
         self._draw_wheels()
+
+        glPopMatrix()
+
+    def draw_wheels_only_3d(self):
+        """Draw ONLY the wheels in 3D for first-person view (car body invisible)"""
+        glPushMatrix()
+
+        # Transform to car position and orientation
+        glTranslatef(self.x, self.y, 0)
+        glRotatef(np.degrees(self.theta), 0, 0, 1)
+
+        # Draw wheels with enhanced details
+        self._draw_wheels_enhanced()
 
         glPopMatrix()
 
@@ -325,6 +348,113 @@ class Car:
             glVertex3f(x, y, -height/2)
             glVertex3f(x, y, height/2)
         glEnd()
+
+    def _draw_wheels_enhanced(self):
+        """Draw car wheels with tire treads and rotation"""
+        wheel_radius = 4
+        wheel_width = 3
+
+        # Wheel positions relative to car center
+        # Raised Z position to put wheels above ground
+        wheel_positions = [
+            (self.length/2 - 5, self.width/2, wheel_radius),      # Front left
+            (self.length/2 - 5, -self.width/2, wheel_radius),     # Front right
+            (-self.length/2 + 5, self.width/2, wheel_radius),     # Rear left
+            (-self.length/2 + 5, -self.width/2, wheel_radius),    # Rear right
+        ]
+
+        for i, (wx, wy, wz) in enumerate(wheel_positions):
+            glPushMatrix()
+            glTranslatef(wx, wy, wz)
+
+            # Front wheels have steering angle
+            if i < 2:
+                glRotatef(np.degrees(self.steering_angle), 0, 0, 1)
+
+            # Orient wheel to point forward (rotate 90 degrees around X-axis)
+            glRotatef(90, 1, 0, 0)
+
+            # Apply wheel rotation (rolling animation around Z-axis after rotation)
+            glRotatef(np.degrees(self.wheel_rotation), 0, 0, 1)
+
+            # Draw tire (black rubber)
+            glColor3f(0.1, 0.1, 0.1)
+            self._draw_tire_with_treads(wheel_radius, wheel_width, 12)  # Reduced slices from 16 to 12
+
+            # Draw rim (metallic gray)
+            glColor3f(0.6, 0.6, 0.65)
+            self._draw_cylinder(wheel_radius * 0.6, wheel_width * 0.8, 8)
+
+            glPopMatrix()
+
+    def _draw_tire_with_treads(self, radius, width, slices):
+        """Draw a tire with tread pattern"""
+        # Draw main tire body
+        glBegin(GL_QUAD_STRIP)
+        for i in range(slices + 1):
+            angle = 2 * np.pi * i / slices
+            x = radius * np.cos(angle)
+            y = radius * np.sin(angle)
+            glVertex3f(x, y, -width/2)
+            glVertex3f(x, y, width/2)
+        glEnd()
+
+        # Draw tire caps (sides)
+        glBegin(GL_TRIANGLE_FAN)
+        glVertex3f(0, 0, width/2)
+        for i in range(slices + 1):
+            angle = 2 * np.pi * i / slices
+            x = radius * np.cos(angle)
+            y = radius * np.sin(angle)
+            glVertex3f(x, y, width/2)
+        glEnd()
+
+        glBegin(GL_TRIANGLE_FAN)
+        glVertex3f(0, 0, -width/2)
+        for i in range(slices + 1):
+            angle = 2 * np.pi * i / slices
+            x = radius * np.cos(angle)
+            y = radius * np.sin(angle)
+            glVertex3f(x, y, -width/2)
+        glEnd()
+
+        # Draw tread grooves as chevrons/arrows pointing in rolling direction
+        # The chevron pattern should wrap around the tire circumference
+        glColor3f(0.05, 0.05, 0.05)
+        glLineWidth(2)
+        num_treads = 12
+        for i in range(num_treads):
+            angle = 2 * np.pi * i / num_treads
+
+            # Calculate positions for the chevron pattern
+            # Each chevron is a V-shape that wraps around the tire
+            x_center = radius * np.cos(angle)
+            y_center = radius * np.sin(angle)
+
+            # Next position (for the arrow point direction)
+            angle_offset = np.pi / (num_treads * 2)  # Small offset for arrow shape
+
+            # Create V-shape chevron pointing in rolling direction
+            # Left arm of chevron
+            x_left = radius * np.cos(angle - angle_offset)
+            y_left = radius * np.sin(angle - angle_offset)
+
+            # Right arm of chevron
+            x_right = radius * np.cos(angle + angle_offset)
+            y_right = radius * np.sin(angle + angle_offset)
+
+            # Draw left arm (from edge to center)
+            glBegin(GL_LINES)
+            glVertex3f(x_left, y_left, -width/2 * 0.7)
+            glVertex3f(x_center, y_center, 0)  # Meet at center
+            glEnd()
+
+            # Draw right arm (from center to edge)
+            glBegin(GL_LINES)
+            glVertex3f(x_center, y_center, 0)
+            glVertex3f(x_right, y_right, width/2 * 0.7)
+            glEnd()
+        glLineWidth(1)
 
     def is_on_track(self, track):
         """Check if car is within track boundaries"""
@@ -937,11 +1067,11 @@ class SaoPauloTrack:
         glVertex3f(x, y, height)
         glEnd()
 
-        # Draw sphere at top
+        # Draw sphere at top - OPTIMIZED: reduced from 8,8 to 6,6
         glPushMatrix()
         glTranslatef(x, y, height)
         quadric = gluNewQuadric()
-        gluSphere(quadric, 3, 8, 8)
+        gluSphere(quadric, 3, 6, 6)  # Reduced detail for performance
         gluDeleteQuadric(quadric)
         glPopMatrix()
 
@@ -954,7 +1084,7 @@ class SaoPauloTrack:
         glPushMatrix()
         glTranslatef(x, y, height)
         quadric = gluNewQuadric()
-        gluSphere(quadric, 5, 8, 8)
+        gluSphere(quadric, 5, 6, 6)  # Reduced detail for performance
         gluDeleteQuadric(quadric)
         glPopMatrix()
 
@@ -1272,10 +1402,10 @@ class Renderer3D:
         glVertex3f(0, 0, height)
         glEnd()
 
-        # Draw sphere at top
+        # Draw sphere at top - OPTIMIZED: reduced from 8,8 to 6,6
         glTranslatef(0, 0, height)
         quadric = gluNewQuadric()
-        gluSphere(quadric, radius, 8, 8)
+        gluSphere(quadric, radius, 6, 6)  # Reduced detail for performance
         gluDeleteQuadric(quadric)
 
         glPopMatrix()
@@ -1295,11 +1425,11 @@ class Renderer3D:
             glVertex3f(lx, ly, 30)
             glEnd()
 
-            # Draw sphere at top
+            # Draw sphere at top - OPTIMIZED: reduced from 12,12 to 8,8
             glPushMatrix()
             glTranslatef(lx, ly, 30)
             quadric = gluNewQuadric()
-            gluSphere(quadric, 8, 12, 12)
+            gluSphere(quadric, 8, 8, 8)  # Reduced detail for performance
             gluDeleteQuadric(quadric)
             glPopMatrix()
 
@@ -1670,8 +1800,8 @@ def main():
         # Draw LKA lookahead point
         renderer.draw_lookahead_point_3d(lka)
 
-        # Draw car (disabled in first-person, but could draw for debugging)
-        # car.draw_3d()
+        # Draw ONLY wheels (car body invisible for first-person view)
+        car.draw_wheels_only_3d()
 
         # === 2D OVERLAY RENDERING ===
         # Switch to 2D orthographic projection for HUD and minimap

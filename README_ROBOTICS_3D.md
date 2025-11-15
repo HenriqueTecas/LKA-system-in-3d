@@ -21,7 +21,8 @@ This is a 3D OpenGL conversion of the robotics lab simulation that preserves all
   - 🏢 **Buildings**: 2 landmark buildings at strategic positions
 
 ### 3D Rendering
-- **First-person hood camera view** - Experience the simulation from the driver's perspective
+- **True first-person center camera view** - Experience the simulation from the center of the car with only wheels visible
+- **Animated wheels with tire treads** - Realistic wheel rendering that rotates as the car moves and turns with steering
 - **3D track visualization** - São Paulo F1 circuit rendered with realistic road surface and lane markings
 - **Elevated terrain** - Green terrain walls around the track to clearly distinguish the drivable area
 - **3D lane detection markers** - Visual spheres showing detected lane points in the 3D world
