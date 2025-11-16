@@ -82,20 +82,80 @@ This is a 3D OpenGL conversion of the robotics lab simulation that preserves all
 pip install pygame PyOpenGL PyOpenGL_accelerate numpy
 ```
 
+Or use the requirements file:
+```bash
+pip install -r requirements.txt
+```
+
+## Project Structure
+
+```
+LKA/
+├── main.py                    # Entry point (uses modular src/)
+├── robotics_lab_3d.py        # Original monolithic version (2132 lines)
+├── requirements.txt           # Python dependencies
+├── run_robotics_3d.sh        # Helper script for display setup
+├── README_ROBOTICS_3D.md     # This file
+├── REFACTORING_PLAN.md       # Modular refactoring documentation
+├── src/                       # **NEW: Modular implementation**
+│   ├── __init__.py           # Package initialization
+│   ├── README.md             # Module documentation
+│   ├── config.py             # Configuration constants
+│   ├── main.py               # Main simulation loop (~260 lines)
+│   ├── car.py                # Car class (~400 lines)
+│   ├── camera_sensor.py      # CameraSensor class (~210 lines)
+│   ├── lka_controller.py     # PurePursuitLKA class (~170 lines)
+│   ├── track.py              # SaoPauloTrack class (~590 lines)
+│   ├── renderer.py           # Renderer3D class (~130 lines)
+│   ├── minimap.py            # Minimap class (~220 lines)
+│   └── hud.py                # HUD class (~110 lines)
+└── test_*.py                  # Test scripts
+```
+
+### Modular Architecture Benefits
+
+✅ **Organized Code**: Each class in its own module
+✅ **Easy Maintenance**: Find and fix issues faster
+✅ **Reusable Components**: Import classes independently
+✅ **Clear Dependencies**: Explicit imports show relationships
+✅ **Better Collaboration**: Multiple people can work on different modules
+✅ **Easier Testing**: Test individual components in isolation
+
+### Module Overview
+
+- **config.py**: Screen dimensions, FPS, colors
+- **car.py**: Ackermann kinematics, wheel animation, 3D rendering
+- **camera_sensor.py**: Lane detection with uniform sampling
+- **lka_controller.py**: Pure Pursuit algorithm, dense path generation
+- **track.py**: F1 circuit layout, 3D terrain, scenery
+- **renderer.py**: OpenGL 3D scene management
+- **minimap.py**: 2D top-down view
+- **hud.py**: FPS counter, telemetry display
+- **main.py**: Simulation loop, event handling
+
+See `src/README.md` for detailed module documentation.
+
 ## Running the Simulation
 
-### Option 1: Direct Run (if you have a display)
+### Option 1: Modular Version (Recommended)
+```bash
+python3 main.py
+```
+This runs the new modular implementation from the `src/` package.
+
+### Option 2: Original Monolithic Version
 ```bash
 python3 robotics_lab_3d.py
 ```
+This runs the original single-file version (2132 lines).
 
-### Option 2: Using the Helper Script (handles display setup)
+### Option 3: Using the Helper Script
 ```bash
 ./run_robotics_3d.sh
 ```
 This script automatically detects your environment and uses Xvfb if needed.
 
-### Option 3: For Headless/SSH Environments
+### Option 4: For Headless/SSH Environments
 ```bash
 # Install Xvfb if not already installed
 sudo apt-get install xvfb

@@ -1,0 +1,16 @@
+# 3D Robotics Lab Simulation Requirements
+
+# Core dependencies
+pygame>=2.0.0
+PyOpenGL>=3.1.0
+PyOpenGL_accelerate>=3.1.0
+numpy>=1.20.0
+
+# Optional but recommended
+# For better performance on some systems
+mesa-utils  # Linux OpenGL utilities (system package)
+
+# Development tools (optional)
+# pylint
+# black
+# pytest
