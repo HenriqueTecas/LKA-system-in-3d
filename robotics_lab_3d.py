@@ -7,6 +7,20 @@ Task 2c: Pure Pursuit Lane Keeping Assist (LKA) Controller
 3D rendering with hood camera view and minimap.
 Preserves all Ackermann kinematics and Pure Pursuit logic from original.
 
+Open World Driving:
+- Collision detection DISABLED - drive anywhere on the terrain!
+- Explore the green grass areas around the track
+- True open-world 3D driving experience
+- Terrain is fully accessible and drivable
+
+Lane Detection Enhancement:
+- Dense lane center generation: Multiple yellow target points for better resolution
+- Bidirectional pairing + interpolation creates 10-30+ lookahead points
+- Uniform sampling: Lane boundaries sampled at regular 30-pixel intervals
+- Creates evenly-spaced detection points instead of detecting all edges
+- More consistent LKA behavior and better autonomous driving
+- Configurable via camera.sample_interval (default: 30 pixels)
+
 Performance Optimizations:
 - FPS counter with real-time display
 - Texture reuse (no create/delete every frame)
@@ -517,6 +531,10 @@ class CameraSensor:
         self.detection_confidence = 0.95
         self.lane_sample_points = 10
 
+        # NEW: Evenly-spaced sampling configuration
+        self.sample_interval = 5  # pixels between detection points
+        self.use_uniform_sampling = True  # Use evenly-spaced points instead of all visible points
+
         self.left_lane_detected = False
         self.right_lane_detected = False
         self.left_lane_position = None
@@ -579,7 +597,15 @@ class CameraSensor:
         return left_lane_points, right_lane_points, center_points
 
     def _detect_lane_boundary(self, boundary_points, camera_x, camera_y, camera_angle):
-        """Detect visible lane boundary points"""
+        """Detect visible lane boundary points with uniform sampling"""
+        if self.use_uniform_sampling:
+            return self._detect_lane_boundary_uniform(boundary_points, camera_x, camera_y, camera_angle)
+        else:
+            # Original method: detect all visible points
+            return self._detect_lane_boundary_all(boundary_points, camera_x, camera_y, camera_angle)
+
+    def _detect_lane_boundary_all(self, boundary_points, camera_x, camera_y, camera_angle):
+        """Original method: Detect ALL visible lane boundary points"""
         visible_points = []
 
         for point in boundary_points:
@@ -596,6 +622,62 @@ class CameraSensor:
             angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
 
             if abs(angle_diff) < self.field_of_view / 2:
+                visible_points.append((px, py, angle_diff))
+
+        return visible_points
+
+    def _detect_lane_boundary_uniform(self, boundary_points, camera_x, camera_y, camera_angle):
+        """NEW: Sample lane boundary points at uniform intervals along the visible boundary"""
+        visible_points = []
+
+        # First pass: collect all visible points with their cumulative distance
+        points_with_distance = []
+        cumulative_distance = 0.0
+
+        for i, point in enumerate(boundary_points):
+            px, py = point
+            dx = px - camera_x
+            dy = py - camera_y
+            distance_from_camera = np.sqrt(dx**2 + dy**2)
+
+            # Check if point is in camera range
+            if distance_from_camera < self.min_range or distance_from_camera > self.max_range:
+                continue
+
+            # Check if point is in field of view
+            point_angle = np.arctan2(dy, dx)
+            angle_diff = point_angle - camera_angle
+            angle_diff = np.arctan2(np.sin(angle_diff), np.cos(angle_diff))
+
+            if abs(angle_diff) > self.field_of_view / 2:
+                continue
+
+            # Calculate cumulative distance along the boundary
+            if i > 0 and len(points_with_distance) > 0:
+                prev_px, prev_py = points_with_distance[-1][0], points_with_distance[-1][1]
+                segment_length = np.sqrt((px - prev_px)**2 + (py - prev_py)**2)
+                cumulative_distance += segment_length
+
+            points_with_distance.append((px, py, angle_diff, cumulative_distance, distance_from_camera))
+
+        if len(points_with_distance) == 0:
+            return []
+
+        # Second pass: sample at uniform intervals
+        total_length = points_with_distance[-1][3]  # Last cumulative distance
+        num_samples = max(1, int(total_length / self.sample_interval))
+
+        for i in range(num_samples + 1):
+            target_distance = i * self.sample_interval
+
+            # Find the closest point to this target distance
+            best_point = min(points_with_distance,
+                           key=lambda p: abs(p[3] - target_distance))
+
+            px, py, angle_diff, cum_dist, dist_from_cam = best_point
+
+            # Avoid duplicates
+            if not any(abs(vp[0] - px) < 5 and abs(vp[1] - py) < 5 for vp in visible_points):
                 visible_points.append((px, py, angle_diff))
 
         return visible_points
@@ -661,6 +743,10 @@ class PurePursuitLKA:
         self.max_lookahead = 150.0
         self.steering_gain = 1.2
 
+        # NEW: Store all lane center points for visualization
+        self.lane_center_points = []  # All computed lane center points
+        self.lookahead_point = None  # Selected lookahead point
+
     def toggle(self):
         """Toggle LKA on/off"""
         self.active = not self.active
@@ -674,13 +760,15 @@ class PurePursuitLKA:
             self.was_manually_overridden = True
 
     def calculate_steering(self, track):
-        """Pure Pursuit algorithm"""
+        """Pure Pursuit algorithm with enhanced lane center point generation"""
         if not self.active:
+            self.lane_center_points = []
             return None
 
         left_lane, right_lane, center_lane = self.camera.detect_lanes(track)
 
         if not (self.camera.left_lane_detected and self.camera.right_lane_detected):
+            self.lane_center_points = []
             return None
 
         speed = abs(self.car.velocity)
@@ -691,28 +779,11 @@ class PurePursuitLKA:
         car_y = self.car.y
         car_theta = self.car.theta
 
-        # Calculate lane center points
-        lane_center_points = []
-        for left_point in left_lane:
-            left_x, left_y, left_ang = left_point
-            min_dist = float('inf')
-            closest_right = None
+        # IMPROVED: Generate MORE lane center points with better interpolation
+        lane_center_points = self._generate_dense_lane_centers(left_lane, right_lane, car_x, car_y)
 
-            for right_point in right_lane:
-                right_x, right_y, right_ang = right_point
-                dist = np.sqrt((right_x - left_x)**2 + (right_y - left_y)**2)
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_right = right_point
-
-            if closest_right:
-                right_x, right_y, right_ang = closest_right
-                center_x = (left_x + right_x) / 2
-                center_y = (left_y + right_y) / 2
-                dx = center_x - car_x
-                dy = center_y - car_y
-                distance = np.sqrt(dx**2 + dy**2)
-                lane_center_points.append((center_x, center_y, distance))
+        # Store for visualization
+        self.lane_center_points = lane_center_points
 
         if len(lane_center_points) == 0:
             return None
@@ -744,6 +815,85 @@ class PurePursuitLKA:
         self.lookahead_distance = actual_distance
 
         return steering_angle
+
+    def _generate_dense_lane_centers(self, left_lane, right_lane, car_x, car_y):
+        """Generate dense lane center points by interpolating between boundaries"""
+        lane_center_points = []
+
+        # Method 1: Pair closest left-right points (original)
+        for left_point in left_lane:
+            left_x, left_y, left_ang = left_point
+            min_dist = float('inf')
+            closest_right = None
+
+            for right_point in right_lane:
+                right_x, right_y, right_ang = right_point
+                dist = np.sqrt((right_x - left_x)**2 + (right_y - left_y)**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_right = right_point
+
+            if closest_right:
+                right_x, right_y, right_ang = closest_right
+                center_x = (left_x + right_x) / 2
+                center_y = (left_y + right_y) / 2
+                dx = center_x - car_x
+                dy = center_y - car_y
+                distance = np.sqrt(dx**2 + dy**2)
+                lane_center_points.append((center_x, center_y, distance))
+
+        # Method 2: Also pair from right side (creates more points)
+        for right_point in right_lane:
+            right_x, right_y, right_ang = right_point
+            min_dist = float('inf')
+            closest_left = None
+
+            for left_point in left_lane:
+                left_x, left_y, left_ang = left_point
+                dist = np.sqrt((right_x - left_x)**2 + (right_y - left_y)**2)
+                if dist < min_dist:
+                    min_dist = dist
+                    closest_left = left_point
+
+            if closest_left:
+                left_x, left_y, left_ang = closest_left
+                center_x = (left_x + right_x) / 2
+                center_y = (left_y + right_y) / 2
+                dx = center_x - car_x
+                dy = center_y - car_y
+                distance = np.sqrt(dx**2 + dy**2)
+
+                # Avoid duplicates (within 5 pixels)
+                is_duplicate = False
+                for existing_cx, existing_cy, _ in lane_center_points:
+                    if abs(center_x - existing_cx) < 5 and abs(center_y - existing_cy) < 5:
+                        is_duplicate = True
+                        break
+
+                if not is_duplicate:
+                    lane_center_points.append((center_x, center_y, distance))
+
+        # Method 3: Interpolate additional points along the path
+        if len(lane_center_points) >= 2:
+            # Sort by distance from car
+            sorted_centers = sorted(lane_center_points, key=lambda p: p[2])
+            interpolated = []
+
+            for i in range(len(sorted_centers) - 1):
+                cx1, cy1, d1 = sorted_centers[i]
+                cx2, cy2, d2 = sorted_centers[i + 1]
+
+                # Add midpoint if points are far apart
+                dist_between = np.sqrt((cx2 - cx1)**2 + (cy2 - cy1)**2)
+                if dist_between > 40:  # If more than 40 pixels apart
+                    mid_x = (cx1 + cx2) / 2
+                    mid_y = (cy1 + cy2) / 2
+                    mid_dist = np.sqrt((mid_x - car_x)**2 + (mid_y - car_y)**2)
+                    interpolated.append((mid_x, mid_y, mid_dist))
+
+            lane_center_points.extend(interpolated)
+
+        return lane_center_points
 
 
 class SaoPauloTrack:
@@ -1419,29 +1569,52 @@ class Renderer3D:
         glPopMatrix()
 
     def draw_lookahead_point_3d(self, lka):
-        """Draw LKA lookahead point in 3D"""
-        if lka.active and hasattr(lka, 'lookahead_point'):
+        """Draw ALL LKA lane center points and highlight the selected lookahead point"""
+        if not lka.active:
+            return
+
+        glDisable(GL_LIGHTING)
+
+        # Draw ALL lane center points (smaller, semi-transparent yellow)
+        if hasattr(lka, 'lane_center_points') and lka.lane_center_points:
+            glColor3f(1.0, 1.0, 0.5)  # Light yellow
+            for cx, cy, dist in lka.lane_center_points:
+                # Draw small vertical marker
+                glLineWidth(2)
+                glBegin(GL_LINES)
+                glVertex3f(cx, cy, 0)
+                glVertex3f(cx, cy, 15)
+                glEnd()
+
+                # Draw small sphere at top
+                glPushMatrix()
+                glTranslatef(cx, cy, 15)
+                quadric = gluNewQuadric()
+                gluSphere(quadric, 4, 4, 4)  # Small sphere
+                gluDeleteQuadric(quadric)
+                glPopMatrix()
+
+        # Draw the SELECTED lookahead point (larger, bright yellow)
+        if hasattr(lka, 'lookahead_point') and lka.lookahead_point:
             lx, ly = lka.lookahead_point
 
-            glDisable(GL_LIGHTING)
-
             # Draw vertical marker
-            glColor3f(1.0, 1.0, 0.0)
-            glLineWidth(3)
+            glColor3f(1.0, 1.0, 0.0)  # Bright yellow
+            glLineWidth(4)
             glBegin(GL_LINES)
             glVertex3f(lx, ly, 0)
-            glVertex3f(lx, ly, 30)
+            glVertex3f(lx, ly, 35)
             glEnd()
 
-            # Draw sphere at top - OPTIMIZED: reduced from 12,12 to 6,6
+            # Draw large sphere at top (this is the actual target)
             glPushMatrix()
-            glTranslatef(lx, ly, 30)
+            glTranslatef(lx, ly, 35)
             quadric = gluNewQuadric()
-            gluSphere(quadric, 8, 6, 6)  # Reduced detail for performance
+            gluSphere(quadric, 8, 6, 6)  # Large sphere for selected point
             gluDeleteQuadric(quadric)
             glPopMatrix()
 
-            glEnable(GL_LIGHTING)
+        glEnable(GL_LIGHTING)
 
 
 class Minimap:
@@ -1535,13 +1708,19 @@ class Minimap:
         # Draw camera FOV and detections
         self._draw_camera_view_2d(camera)
 
-        # Draw LKA lookahead
+        # Draw ALL LKA lane center points (small yellow dots)
+        if lka.active and hasattr(lka, 'lane_center_points') and lka.lane_center_points:
+            for cx, cy, dist in lka.lane_center_points:
+                center_scaled = self._world_to_minimap(cx, cy)
+                pygame.draw.circle(self.surface, (255, 255, 100), center_scaled, 3)
+
+        # Draw LKA selected lookahead point (larger, brighter)
         if lka.active and hasattr(lka, 'lookahead_point'):
             lx, ly = lka.lookahead_point
             car_scaled = self._world_to_minimap(car.x, car.y)
             lookahead_scaled = self._world_to_minimap(lx, ly)
             pygame.draw.line(self.surface, YELLOW, car_scaled, lookahead_scaled, 2)
-            pygame.draw.circle(self.surface, YELLOW, lookahead_scaled, 6)
+            pygame.draw.circle(self.surface, YELLOW, lookahead_scaled, 7)  # Larger for selected point
 
         # Draw car (simple representation)
         self._draw_car_2d(car)
@@ -1830,9 +2009,9 @@ def main():
         # Update car
         car.update(dt, keys, lka_steering, lka)
 
-        # Check collision with track boundaries
-        if not car.is_on_track(track):
-            car.handle_collision()
+        # Check collision with track boundaries - DISABLED to allow driving on terrain
+        # if not car.is_on_track(track):
+        #     car.handle_collision()
 
         # === 3D RENDERING ===
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)

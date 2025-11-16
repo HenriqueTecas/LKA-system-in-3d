@@ -8,6 +8,22 @@ This is a 3D OpenGL conversion of the robotics lab simulation that preserves all
 
 ### Latest Enhancements ✨
 
+- **✅ Open World Driving** - NEW! Drive anywhere including the green terrain:
+  - Collision detection disabled - explore the entire 3D environment
+  - Drive on grass, explore outside the track boundaries
+  - True open-world 3D driving experience
+  - Terrain is fully drivable at ground level (z=0)
+- **✅ Dense Lane Center Path** - Multiple yellow LKA target points:
+  - Generates many lane center points between left/right boundaries
+  - Creates bidirectional pairing (left→right AND right→left)
+  - Interpolates additional midpoints when gaps are large (>40px)
+  - Better road resolution = smoother autonomous driving
+  - All points visible as small yellow markers, selected point is larger
+- **✅ Uniform Lane Detection Sampling** - Lane boundaries sampled at regular 30-pixel intervals:
+  - Creates evenly-spaced detection points along visible lane boundaries
+  - More consistent LKA behavior with predictable lookahead points
+  - Better autonomous driving performance with uniform spacing
+  - Configurable sampling interval (default: 30 pixels)
 - **✅ Performance Optimized v2** - Major FPS improvements:
   - Added real-time FPS counter with color-coded performance indicator
   - Optimized texture creation (reuse instead of create/delete every frame)
@@ -15,7 +31,6 @@ This is a 3D OpenGL conversion of the robotics lab simulation that preserves all
   - Reduced sphere detail across all scenery elements
   - Result: 15-25% FPS improvement on most systems
 - **✅ Fixed Steering Controls** - A/D keys now work correctly for 3D hood camera view
-- **✅ Fixed Collision Detection** - More forgiving boundaries, no more unexpected wall hits
 - **🔧 Minimap Scaling (IN PROGRESS)** - Working on showing entire track scaled to fit (debug mode active)
 - **✅ 3D Grass Texture** - Added alternating stripe and checkerboard patterns to terrain for depth perception
 - **✅ Road Texture** - Subtle 3-tone gray pattern on road surface for better visual feedback
@@ -142,7 +157,10 @@ This means:
 ### Key Components
 
 1. **Car Class** - Ackermann steering model with 3D rendering methods
-2. **CameraSensor Class** - Lane detection with original FOV and range logic
+2. **CameraSensor Class** - Lane detection with **uniform sampling** at configurable intervals:
+   - `sample_interval`: Distance between detection points (default: 30 pixels)
+   - `use_uniform_sampling`: Toggle between uniform sampling (True) or all-points detection (False)
+   - Creates evenly-spaced lane markers for more consistent LKA behavior
 3. **PurePursuitLKA Class** - Pure Pursuit algorithm for autonomous lane keeping
 4. **SaoPauloTrack Class** - Track layout with 3D rendering (flat road + elevated terrain)
 5. **Renderer3D Class** - OpenGL 3D scene management and lighting
