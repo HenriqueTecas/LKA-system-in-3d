@@ -54,7 +54,8 @@ class Renderer3D:
 
     def draw_lane_markers_3d(self, camera, track):
         """Draw 3D markers for detected lane points - ONLY FOR CURRENT LANE"""
-        left_lane, right_lane, center_lane = camera.detect_lanes(track)
+        # PERFORMANCE FIX: Use cached measurement instead of re-detecting
+        left_lane, center_lane, right_lane = camera.last_measurement
 
         # Determine which lane we're in and which boundaries to display
         current_lane = camera.current_lane
