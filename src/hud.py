@@ -88,9 +88,12 @@ class HUD:
 
     def _draw_telemetry(self, surface, car):
         """Draw speed and steering information"""
+        # Convert m/s to km/h
+        speed_kmh = abs(car.velocity) * 3.6
         texts = [
-            f"Speed: {abs(car.velocity):.1f} px/s",
+            f"Speed: {speed_kmh:.1f} km/h ({abs(car.velocity):.1f} m/s)",
             f"Steering: {np.degrees(car.steering_angle):.1f}°",
+            f"Throttle: {car.throttle_state:.2f} | Brake: {car.brake_state:.2f}",
         ]
 
         y = HEIGHT - 100

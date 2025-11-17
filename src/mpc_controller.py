@@ -14,7 +14,7 @@ class MPCLaneKeeping:
     """
     Model Predictive Control Lane Keeping Assist
 
-    Uses forward simulation with the Ackermann kinematic model to predict
+    Uses forward simulation with physics-based Ackermann model to predict
     future trajectories for different steering commands, then selects the
     command that minimizes a cost function.
 
@@ -22,6 +22,8 @@ class MPCLaneKeeping:
     - Lateral deviation from lane center
     - Leaving the road (off-track)
     - Crossing into opposite lane
+    
+    All units are SI (meters, m/s, radians).
     """
 
     def __init__(self, car, camera):
@@ -30,18 +32,18 @@ class MPCLaneKeeping:
         self.active = False
         self.was_manually_overridden = False
 
-        # MPC parameters - TUNED for smoother behavior
-        self.prediction_horizon = 20  # Look further ahead for smoother planning
-        self.dt = 0.15  # Larger time steps = less reactive
-        self.num_candidates = 9  # Fewer candidates = faster, less twitchy
+        # MPC parameters - BALANCED for curves and performance
+        self.prediction_horizon = 15  # Good lookahead with reasonable performance
+        self.dt = 0.18  # Balance between accuracy and speed
+        self.num_candidates = 7  # Keep reduced for performance
 
-        # Cost function weights - SOFTENED for less aggressive behavior
-        self.weight_lateral_deviation = 20.0  # Reduced from 100 - less aggressive corrections
+        # Cost function weights - TUNED for curve handling
+        self.weight_lateral_deviation = 50.0  # Increased to prioritize lane center tracking
         self.weight_off_track = 10000.0  # Keep strong - safety critical
         self.weight_wrong_lane = 5000.0  # Keep strong - safety critical
-        self.weight_steering_effort = 10.0  # Increased from 1 - prefer less steering
-        self.weight_steering_change = 50.0  # NEW - penalize rapid steering changes
-        self.weight_boundary_proximity = 200.0  # NEW - heavily penalize getting close to boundaries
+        self.weight_steering_effort = 5.0  # Reduced to allow sharper turns in curves
+        self.weight_steering_change = 30.0  # Reduced for more responsive steering
+        self.weight_boundary_proximity = 100.0  # Reduced - was causing late reactions
 
         # Steering command candidates (fraction of max steering) - MORE CONSERVATIVE
         self.steering_fractions = np.linspace(-0.6, 0.6, self.num_candidates)  # Limited to ±60% instead of ±100%
@@ -76,8 +78,8 @@ class MPCLaneKeeping:
             self.predicted_trajectory = []
             return None
 
-        # Get current lane detection
-        left_lane, right_lane, center_lane = self.camera.detect_lanes(track)
+        # Use camera's last measurement (already detected in main loop)
+        left_lane, center_lane, right_lane = self.camera.last_measurement
 
         # Determine which lane we're in
         current_lane = self.camera.current_lane
@@ -126,9 +128,7 @@ class MPCLaneKeeping:
             trajectory, cost = self._simulate_and_cost(
                 current_x, current_y, current_theta, current_velocity,
                 steering_cmd, lane_center_points, track, current_lane
-            )
-
-            # Track best command
+)            # Track best command
             if cost < best_cost:
                 best_cost = cost
                 best_steering = steering_cmd
@@ -145,24 +145,20 @@ class MPCLaneKeeping:
         return best_steering
 
     def _compute_lane_centers(self, left_boundary, right_boundary):
-        """Compute lane center points from left and right boundaries"""
+        """Compute lane center points from left and right boundaries (optimized)"""
         lane_centers = []
 
-        # Pair closest points
-        for left_x, left_y, _ in left_boundary:
-            min_dist = float('inf')
-            closest_right = None
-
-            for right_x, right_y, _ in right_boundary:
-                dist = np.sqrt((right_x - left_x)**2 + (right_y - left_y)**2)
-                if dist < min_dist:
-                    min_dist = dist
-                    closest_right = (right_x, right_y)
-
-            if closest_right:
-                center_x = (left_x + closest_right[0]) / 2
-                center_y = (left_y + closest_right[1]) / 2
-                lane_centers.append((center_x, center_y))
+        # Simple index-based pairing (assumes points are roughly aligned)
+        # Much faster than closest-point search
+        n = min(len(left_boundary), len(right_boundary))
+        
+        for i in range(n):
+            left_x, left_y = left_boundary[i][0], left_boundary[i][1]
+            right_x, right_y = right_boundary[i][0], right_boundary[i][1]
+            
+            center_x = (left_x + right_x) / 2.0
+            center_y = (left_y + right_y) / 2.0
+            lane_centers.append((center_x, center_y))
 
         return lane_centers
 
@@ -195,15 +191,16 @@ class MPCLaneKeeping:
                 theta += omega * self.dt
                 theta = np.arctan2(np.sin(theta), np.cos(theta))
 
-            # Compute cost at this position
-            step_cost = self._compute_position_cost(
-                x, y, lane_centers, track, current_lane
-            )
-
-            total_cost += step_cost
+            # Compute cost at this position (first 3 steps always, then every other)
+            # This ensures accurate near-term prediction while saving computation far ahead
+            if step < 3 or step % 2 == 0:
+                step_cost = self._compute_position_cost(
+                    x, y, lane_centers, track, current_lane
+                )
+                total_cost += step_cost
 
             # Early termination if cost is already too high
-            if total_cost > 1e6:
+            if total_cost > 6e5:  # Balanced threshold
                 break
 
         # Add steering effort cost (penalize large steering angles)
@@ -224,18 +221,15 @@ class MPCLaneKeeping:
         """
         cost = 0.0
 
-        # 1. Lateral deviation from lane center
+        # 1. Lateral deviation from lane center (vectorized for speed)
         if len(lane_centers) > 0:
-            # Find closest lane center point
-            distances = [np.sqrt((x - cx)**2 + (y - cy)**2)
-                        for cx, cy in lane_centers]
-            min_dist = min(distances)
-            closest_idx = distances.index(min_dist)
-            closest_center = lane_centers[closest_idx]
-
+            # Find closest lane center point using numpy
+            centers_array = np.array(lane_centers)
+            distances_sq = (centers_array[:, 0] - x)**2 + (centers_array[:, 1] - y)**2
+            closest_idx = np.argmin(distances_sq)
+            
             # Lateral deviation (linear cost for smoother behavior near center)
-            lateral_dev = np.sqrt((x - closest_center[0])**2 +
-                                 (y - closest_center[1])**2)
+            lateral_dev = np.sqrt(distances_sq[closest_idx])
             cost += self.weight_lateral_deviation * lateral_dev
 
         # 2. Check if position is on track
@@ -304,9 +298,28 @@ class MPCLaneKeeping:
 
         return on_track, lateral_offset
 
+        perp_angle = track_angle + np.pi / 2
+        lateral_offset_px = (to_point_x * np.cos(perp_angle) +
+                            to_point_y * np.sin(perp_angle))
+        
+        # Convert to meters
+        lateral_offset = lateral_offset_px / self.car.pixels_per_meter
+
+        # Check if within track bounds (track width in pixels, convert to meters)
+        # Track width is total width (2 * lane_width), so edges are at ±track_width/2
+        half_width = (track.track_width / 2.0) / self.car.pixels_per_meter
+        on_track = abs(lateral_offset) <= half_width
+
+        return on_track, lateral_offset
+
     def _is_in_wrong_lane(self, lateral_offset, current_lane, lane_width):
         """
-        Check if lateral offset corresponds to being in the wrong lane
+        Check if lateral offset places vehicle in wrong lane
+        
+        Args:
+            lateral_offset: perpendicular distance from centerline in meters
+            current_lane: "LEFT" or "RIGHT"
+            lane_width: width of one lane in meters
         
         Track geometry:
         - Track centerline is at lateral_offset = 0

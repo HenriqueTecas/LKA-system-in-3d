@@ -12,13 +12,16 @@ from OpenGL.GLU import *
 import numpy as np
 import sys
 import os
+import platform
+import time
 
 # Import configuration
 from .config import *
 
 # Import all components
 from .car import Car
-from .camera_sensor import CameraSensor
+#from .camera_sensor import CameraSensor
+from .realistic_camera import RealisticCameraSensor
 from .lka_controller import PurePursuitLKA
 from .mpc_controller import MPCLaneKeeping
 from .track import SaoPauloTrack
@@ -33,8 +36,9 @@ def init_display():
     os.environ['SDL_VIDEO_X11_FORCE_EGL'] = '0'  # Disable EGL, use GLX instead
     os.environ['PYOPENGL_PLATFORM'] = 'glx'  # Force GLX platform
 
-    # Check if display is available
-    if 'DISPLAY' not in os.environ:
+    # Check if display is available on Unix-like systems
+    # On Windows, SDL/pygame does not rely on the DISPLAY env var so skip this check there.
+    if platform.system() != 'Windows' and 'DISPLAY' not in os.environ:
         print("ERROR: No display found!")
         print("Solutions:")
         print("1. If running over SSH: use 'ssh -X' for X11 forwarding")
@@ -60,7 +64,7 @@ def init_display():
             print(f"Trying {description}...")
             screen = pygame.display.set_mode((WIDTH, HEIGHT), flags)
             pygame.display.set_caption("Lab 1 - 3D Car Simulation with Hood View")
-            print(f"✓ Successfully initialized with {description}")
+            print(f"[OK] Successfully initialized with {description}")
             break
         except pygame.error as e:
             error_messages.append(f"  {description}: {e}")
@@ -91,12 +95,15 @@ def main():
     track = SaoPauloTrack(offset_x=50, offset_y=50)
 
     # Create car
-    start_x, start_y, start_theta = track.get_start_position(lane_number=1)
+    start_x, start_y, start_theta = track.get_start_position(lane_number=1)  # Start in lane 1 (negative offset = LEFT of centerline)
     car = Car(start_x, start_y, start_theta)
     car.track = track  # Store reference for camera
 
-    # Create camera sensor
-    camera = CameraSensor(car)
+    # Create camera sensor - USING SIMPLE CAMERA (realistic has issues)
+    # Simple FOV-based camera works reliably
+    # Create camera sensor with distance-based confidence
+    camera = RealisticCameraSensor(car)
+    # To use simple camera: camera = CameraSensor(car)
 
     # Create LKA controllers
     lka = PurePursuitLKA(car, camera)
@@ -114,12 +121,23 @@ def main():
     # Pre-allocate texture for overlay (performance optimization)
     overlay_texture_id = glGenTextures(1)
 
-    # Main loop
+    # Main loop -> fixed-timestep physics + rendering
     running = True
-    dt = 1.0 / FPS
+    physics_dt = PHYSICS_DT
+    accumulator = 0.0
+    prev_time = time.perf_counter()
 
     while running:
-        # Handle events
+        # Time management
+        current_time = time.perf_counter()
+        frame_time = current_time - prev_time
+        prev_time = current_time
+        # Clamp very large frame times (e.g., when debugger paused)
+        if frame_time > 0.25:
+            frame_time = 0.25
+        accumulator += frame_time
+
+        # Handle events once per frame (input / toggles)
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 running = False
@@ -137,23 +155,31 @@ def main():
                         lka.deactivate()
                     mpc.toggle()
 
-        # Get keyboard state
+        # Capture current key state (will be used during physics steps)
         keys = pygame.key.get_pressed()
 
-        # Calculate LKA steering (Pure Pursuit or MPC)
-        lka_steering = None
-        if lka.active:
-            lka_steering = lka.calculate_steering(track)
-        elif mpc.active:
-            lka_steering = mpc.calculate_steering(track)
+        # Run physics updates at fixed timestep. Controllers and vehicle state
+        # are advanced in these steps so their timing is deterministic.
+        while accumulator >= physics_dt:
+            # Detect lanes once per physics step (shared by controllers and visualization)
+            camera.detect_lanes(track)
+            
+            # Calculate LKA steering (Pure Pursuit or MPC) at physics rate
+            lka_steering = None
+            if lka.active:
+                lka_steering = lka.calculate_steering(track)
+            elif mpc.active:
+                lka_steering = mpc.calculate_steering(track)
 
-        # Update car (pass both LKA controllers)
-        active_lka = lka if lka.active else (mpc if mpc.active else None)
-        car.update(dt, keys, lka_steering, active_lka)
+            # Update car (pass both LKA controllers)
+            active_lka = lka if lka.active else (mpc if mpc.active else None)
+            car.update(physics_dt, keys, lka_steering, active_lka)
 
-        # Collision detection disabled for open-world driving
-        # if not car.is_on_track(track):
-        #     car.handle_collision()
+            # Collision detection disabled for open-world driving
+            # if not car.is_on_track(track):
+            #     car.handle_collision()
+
+            accumulator -= physics_dt
 
         # === 3D RENDERING ===
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)

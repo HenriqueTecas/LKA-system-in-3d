@@ -11,14 +11,24 @@ import numpy as np
 
 
 class SaoPauloTrack:
-    """São Paulo F1 Circuit - identical to original"""
-    def __init__(self, offset_x=100, offset_y=100):
+    """São Paulo F1 Circuit (Interlagos) - Scaled to real dimensions
+    
+    Real track: 4.309 km lap length, ~10m width
+    At 12 pixels/meter: needs ~19.4x scale factor from base coordinates
+    """
+    def __init__(self, offset_x=500, offset_y=500):
         self.offset_x = offset_x
         self.offset_y = offset_y
-        self.lane_width = 50
-        self.track_width = 2 * self.lane_width
+        self.lane_width = 60  # 5 meters per lane at 12 pixels/meter
+        self.track_width = 2 * self.lane_width  # 10 meters total (120 pixels)
 
-        scale = 1.0
+        # Scale factor to achieve 4309m lap length
+        # Original track in base coords: 2663.2 pixels
+        # Target: 4309m × 12 px/m = 51,708 pixels
+        # Scale: 51,708 / 2663.2 ≈ 19.4
+        scale = 19.4
+        
+        # Base centerline coordinates (original track shape)
         self.centerline = [
             (800, 600), (750, 500), (650, 400), (550, 350), (450, 330),
             (350, 300), (250, 250), (200, 180), (180, 120), (200, 60),
