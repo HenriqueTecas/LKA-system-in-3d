@@ -51,25 +51,36 @@ class Renderer3D:
         )
 
     def draw_lane_markers_3d(self, camera, track):
-        """Draw 3D markers for detected lane points"""
+        """Draw 3D markers for detected lane points - ONLY FOR CURRENT LANE"""
         left_lane, right_lane, center_lane = camera.detect_lanes(track)
+        
+        # Determine which lane we're in and which boundaries to display
+        current_lane = camera.current_lane
+        
+        if current_lane == "LEFT":
+            # In left lane: show left outer boundary and center line
+            lane_left_boundary = left_lane
+            lane_right_boundary = center_lane
+        elif current_lane == "RIGHT":
+            # In right lane: show center line and right outer boundary
+            lane_left_boundary = center_lane
+            lane_right_boundary = right_lane
+        else:
+            # Unknown - show all (fallback)
+            lane_left_boundary = left_lane
+            lane_right_boundary = right_lane
 
         glDisable(GL_LIGHTING)
 
-        # Draw left lane markers (red)
+        # Draw left boundary of current lane (red)
         glColor3f(1.0, 0.0, 0.0)
-        for px, py, angle in left_lane:
+        for px, py, angle in lane_left_boundary:
             self._draw_marker(px, py, 5.0, 8.0)
 
-        # Draw right lane markers (cyan)
+        # Draw right boundary of current lane (cyan)
         glColor3f(0.0, 0.8, 1.0)
-        for px, py, angle in right_lane:
+        for px, py, angle in lane_right_boundary:
             self._draw_marker(px, py, 5.0, 8.0)
-
-        # Draw center lane markers (yellow)
-        glColor3f(1.0, 1.0, 0.0)
-        for px, py, angle in center_lane:
-            self._draw_marker(px, py, 3.0, 6.0)
 
         glEnable(GL_LIGHTING)
 

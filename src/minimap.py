@@ -177,32 +177,43 @@ class Minimap:
         pygame.draw.line(self.surface, GREEN, camera_pos_scaled, fov_points_scaled[1], 1)
         pygame.draw.line(self.surface, GREEN, camera_pos_scaled, fov_points_scaled[2], 1)
 
-        # Draw detected lane points
+        # Draw detected lane points - ONLY FOR CURRENT LANE
         left_lane, right_lane, center_lane = camera.detect_lanes(camera.car.track)
+        
+        # Determine which lane we're in and which boundaries to display
+        current_lane = camera.current_lane
+        
+        if current_lane == "LEFT":
+            # In left lane: show left outer boundary and center line
+            lane_left_boundary = left_lane
+            lane_right_boundary = center_lane
+        elif current_lane == "RIGHT":
+            # In right lane: show center line and right outer boundary
+            lane_left_boundary = center_lane
+            lane_right_boundary = right_lane
+        else:
+            # Unknown - show all (fallback)
+            lane_left_boundary = left_lane
+            lane_right_boundary = right_lane
 
         # Get wheel positions
         (left_wheel_x, left_wheel_y), (right_wheel_x, right_wheel_y) = camera.car.get_front_wheel_positions()
         left_wheel_scaled = self._world_to_minimap(left_wheel_x, left_wheel_y)
         right_wheel_scaled = self._world_to_minimap(right_wheel_x, right_wheel_y)
 
-        # Draw left lane points with vectors from LEFT wheel
-        for px, py, _ in left_lane:
+        # Draw left boundary of current lane with vectors from LEFT wheel
+        for px, py, _ in lane_left_boundary:
             px_scaled, py_scaled = self._world_to_minimap(px, py)
             pygame.draw.circle(self.surface, (255, 0, 0), (px_scaled, py_scaled), 3)
             # Vector from left wheel to left lane point
             pygame.draw.line(self.surface, (255, 128, 0), left_wheel_scaled, (px_scaled, py_scaled), 1)
 
-        # Draw right lane points with vectors from RIGHT wheel
-        for px, py, _ in right_lane:
+        # Draw right boundary of current lane with vectors from RIGHT wheel
+        for px, py, _ in lane_right_boundary:
             px_scaled, py_scaled = self._world_to_minimap(px, py)
             pygame.draw.circle(self.surface, (0, 128, 255), (px_scaled, py_scaled), 3)
             # Vector from right wheel to right lane point
             pygame.draw.line(self.surface, (0, 200, 200), right_wheel_scaled, (px_scaled, py_scaled), 1)
-
-        # Draw center lane points
-        for px, py, _ in center_lane:
-            px_scaled, py_scaled = self._world_to_minimap(px, py)
-            pygame.draw.circle(self.surface, (0, 0, 200), (px_scaled, py_scaled), 2)
 
         # Draw camera position
         pygame.draw.circle(self.surface, GREEN, camera_pos_scaled, 5)

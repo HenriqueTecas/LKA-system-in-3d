@@ -25,24 +25,32 @@ src/
 - Frame rate (FPS)
 - Color constants (RGB tuples)
 
-### `car.py` 
+### `car.py`
 - **Car class**: Ackermann steering kinematics
 - 3D rendering with animated wheels
 - Wheel rotation based on distance traveled
-- ~400 lines
+- **Realistic steering rate limiting for LKA**
+- ~415 lines
 
 ### `camera_sensor.py`
 - **CameraSensor class**: Lane boundary detection
 - Uniform sampling at configurable intervals
-- Field of view and range management
-- ~210 lines
+- Field of view: 100° (increased for better coverage)
+- ~223 lines
 
 ### `lka_controller.py`
 - **PurePursuitLKA class**: Lane keeping assist
+- **Lane-specific tracking**: Only uses current lane boundaries (left or right)
 - Dense lane center path generation
 - Bidirectional pairing and interpolation
 - Pure Pursuit steering algorithm
-- ~170 lines
+- **NEW: Predictive path extension using curvature estimation**
+  - Transforms lane points to ego (car-centric) frame
+  - Fits polynomial to estimate curvature: y(x) = ax² + bx + c
+  - Projects path forward along constant-curvature arc
+  - Realistic approach used in production AVs (Tesla, Waymo)
+  - Solves tight turn problem without unrealistic "memory"
+- ~341 lines
 
 ### `track.py`
 - **SaoPauloTrack class**: F1 circuit layout

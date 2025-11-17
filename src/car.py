@@ -75,7 +75,14 @@ class Car:
             elif keys[pygame.K_d]:
                 self.steering_angle -= self.steering_rate * dt  # Turn RIGHT (SWAPPED for 3D view)
         elif lka_steering is not None:
-            self.steering_angle = lka_steering
+            # Apply rate limiting to LKA steering for realistic behavior
+            steering_error = lka_steering - self.steering_angle
+            max_change = self.steering_rate * dt
+
+            if abs(steering_error) <= max_change:
+                self.steering_angle = lka_steering
+            else:
+                self.steering_angle += np.sign(steering_error) * max_change
         else:
             if abs(self.steering_angle) > 0.01:
                 self.steering_angle *= 0.9

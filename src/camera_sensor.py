@@ -14,7 +14,7 @@ class CameraSensor:
     """Camera sensor for lane detection - identical logic to original"""
     def __init__(self, car):
         self.car = car
-        self.field_of_view = np.radians(80)
+        self.field_of_view = np.radians(100)
         self.max_range = 300
         self.min_range = 20
         self.image_width = 1280

@@ -8,7 +8,31 @@ This is a 3D OpenGL conversion of the robotics lab simulation that preserves all
 
 ### Latest Enhancements ✨
 
-- **✅ Open World Driving** - NEW! Drive anywhere including the green terrain:
+- **✅ Lane-Specific Tracking (NEW!)** - LKA now focuses only on the current lane:
+  - If in LEFT lane: tracks between left outer boundary and center line
+  - If in RIGHT lane: tracks between center line and right outer boundary
+  - Ignores opposite lane boundaries (more realistic)
+  - Prevents lane crossing behavior
+  - Matches real vehicle lane keeping systems
+  - **Visualization updated**: Minimap and 3D view only show current lane boundaries
+- **✅ Predictive Path Extension** - Realistic curvature-based forward projection:
+  - Transforms lane points to ego (car-centric) frame
+  - Estimates lane curvature using polynomial fit: y(x) = ax² + bx + c
+  - Projects path forward by **directly evaluating the polynomial**
+  - **No unrealistic "memory"** - only uses current visible geometry
+  - Solves tight turn problem when camera FOV clips lane markings
+  - Same approach used by Tesla, Waymo, MobilEye in production
+  - **FIXED**: Now properly continues polynomial (no arc formula mixing)
+  - Configurable horizon and prediction density
+- **✅ Realistic LKA Steering Rate** - Lane keeping now matches manual control:
+  - LKA applies same 60°/s steering rate as A/D keys
+  - Smooth, gradual steering changes (no instant snapping)
+  - Matches real vehicle actuator limits
+- **✅ Wider Field of View** - Camera FOV increased from 80° to 100°:
+  - Better peripheral vision for tight turns
+  - Detects lane markings earlier
+  - Keeps lanes in view longer during curves
+- **✅ Open World Driving** - Drive anywhere including the green terrain:
   - Collision detection disabled - explore the entire 3D environment
   - Drive on grass, explore outside the track boundaries
   - True open-world 3D driving experience
@@ -102,9 +126,9 @@ LKA/
 │   ├── README.md             # Module documentation
 │   ├── config.py             # Configuration constants
 │   ├── main.py               # Main simulation loop (~260 lines)
-│   ├── car.py                # Car class (~400 lines)
-│   ├── camera_sensor.py      # CameraSensor class (~210 lines)
-│   ├── lka_controller.py     # PurePursuitLKA class (~170 lines)
+│   ├── car.py                # Car class (~415 lines)
+│   ├── camera_sensor.py      # CameraSensor class (~223 lines)
+│   ├── lka_controller.py     # PurePursuitLKA class (~341 lines)
 │   ├── track.py              # SaoPauloTrack class (~590 lines)
 │   ├── renderer.py           # Renderer3D class (~130 lines)
 │   ├── minimap.py            # Minimap class (~220 lines)
@@ -124,9 +148,9 @@ LKA/
 ### Module Overview
 
 - **config.py**: Screen dimensions, FPS, colors
-- **car.py**: Ackermann kinematics, wheel animation, 3D rendering
-- **camera_sensor.py**: Lane detection with uniform sampling
-- **lka_controller.py**: Pure Pursuit algorithm, dense path generation
+- **car.py**: Ackermann kinematics, wheel animation, 3D rendering, realistic steering rate limiting
+- **camera_sensor.py**: Lane detection with uniform sampling, 100° FOV
+- **lka_controller.py**: Pure Pursuit algorithm, dense path generation, **predictive path extension**
 - **track.py**: F1 circuit layout, 3D terrain, scenery
 - **renderer.py**: OpenGL 3D scene management
 - **minimap.py**: 2D top-down view
