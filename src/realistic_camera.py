@@ -65,8 +65,8 @@ class RealisticCameraSensor:
         self.optimal_detection_distance = 30.0  # meters (100% confidence)
         self.good_detection_distance = 40.0  # meters (80% confidence)
         self.max_detection_distance = 50.0  # meters (30% confidence)
-        self.sample_interval = 1.0  # Sample every 1.0 meters along lane (optimized for performance)
-        self.interpolation_interval = 2.0  # Interpolation density (optimized for performance)
+        self.sample_interval = 4.0  # Sample every 4.0 meters along lane (PERFORMANCE: 4x fewer points)
+        self.interpolation_interval = 6.0  # Interpolation density (PERFORMANCE: reduced computation)
         self.detection_max_range = 50.0  # Maximum detection range
         self.detection_min_range = 1.0  # Minimum detection range
         self.pixels_per_meter = float(PIXELS_PER_METER)

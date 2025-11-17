@@ -121,6 +121,9 @@ def main():
     # Pre-allocate texture for overlay (performance optimization)
     overlay_texture_id = glGenTextures(1)
 
+    # PERFORMANCE: Pre-allocate overlay surface (reused every frame)
+    overlay_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+
     # Main loop -> fixed-timestep physics + rendering
     running = True
     physics_dt = PHYSICS_DT
@@ -214,8 +217,7 @@ def main():
         glDisable(GL_DEPTH_TEST)
         glDisable(GL_LIGHTING)
 
-        # Create pygame surface for 2D overlay
-        overlay_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+        # PERFORMANCE: Reuse pre-allocated surface (just clear it)
         overlay_surface.fill((0, 0, 0, 0))
 
         # Render HUD with FPS (pass both controllers)
