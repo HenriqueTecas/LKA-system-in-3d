@@ -68,7 +68,7 @@ class Minimap:
         map_y = (y - self.min_y) * self.scale + self.margin
         return int(map_x), int(map_y)
 
-    def render(self, car, camera, lka):
+    def render(self, car, camera, lka, mpc=None):
         """Render minimap with original 2D view"""
         # Fill with semi-transparent dark background
         self.surface.fill((20, 20, 20))  # Very dark gray background
@@ -115,6 +115,12 @@ class Minimap:
             lookahead_scaled = self._world_to_minimap(lx, ly)
             pygame.draw.line(self.surface, YELLOW, car_scaled, lookahead_scaled, 2)
             pygame.draw.circle(self.surface, YELLOW, lookahead_scaled, 7)  # Larger for selected point
+
+        # Draw MPC predicted trajectory (silver/gray dots)
+        if mpc and mpc.active and hasattr(mpc, 'predicted_trajectory') and mpc.predicted_trajectory:
+            for x, y in mpc.predicted_trajectory:
+                traj_scaled = self._world_to_minimap(x, y)
+                pygame.draw.circle(self.surface, (192, 192, 192), traj_scaled, 4)  # Silver
 
         # Draw car (simple representation)
         self._draw_car_2d(car)
@@ -179,10 +185,10 @@ class Minimap:
 
         # Draw detected lane points - ONLY FOR CURRENT LANE
         left_lane, right_lane, center_lane = camera.detect_lanes(camera.car.track)
-        
+
         # Determine which lane we're in and which boundaries to display
         current_lane = camera.current_lane
-        
+
         if current_lane == "LEFT":
             # In left lane: show left outer boundary and center line
             lane_left_boundary = left_lane

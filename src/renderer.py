@@ -53,10 +53,10 @@ class Renderer3D:
     def draw_lane_markers_3d(self, camera, track):
         """Draw 3D markers for detected lane points - ONLY FOR CURRENT LANE"""
         left_lane, right_lane, center_lane = camera.detect_lanes(track)
-        
+
         # Determine which lane we're in and which boundaries to display
         current_lane = camera.current_lane
-        
+
         if current_lane == "LEFT":
             # In left lane: show left outer boundary and center line
             lane_left_boundary = left_lane
@@ -150,5 +150,37 @@ class Renderer3D:
             glPopMatrix()
 
         glEnable(GL_LIGHTING)
+
+    def draw_mpc_trajectory_3d(self, mpc):
+        """Draw MPC predicted trajectory as silver markers"""
+        if not mpc.active:
+            return
+
+        if not hasattr(mpc, 'predicted_trajectory') or not mpc.predicted_trajectory:
+            return
+
+        glDisable(GL_LIGHTING)
+
+        # Draw MPC trajectory points (silver/gray)
+        glColor3f(0.75, 0.75, 0.75)  # Silver color
+
+        for x, y in mpc.predicted_trajectory:
+            # Draw vertical marker
+            glLineWidth(2)
+            glBegin(GL_LINES)
+            glVertex3f(x, y, 0)
+            glVertex3f(x, y, 20)
+            glEnd()
+
+            # Draw sphere at top
+            glPushMatrix()
+            glTranslatef(x, y, 20)
+            quadric = gluNewQuadric()
+            gluSphere(quadric, 5, 6, 6)  # Medium-sized sphere
+            gluDeleteQuadric(quadric)
+            glPopMatrix()
+
+        glEnable(GL_LIGHTING)
+
 
 

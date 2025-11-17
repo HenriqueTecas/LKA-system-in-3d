@@ -19,13 +19,13 @@ class HUD:
         self.fps_history = []
         self.fps_update_counter = 0
 
-    def render(self, surface, car, camera, lka, current_fps):
+    def render(self, surface, car, camera, lka, current_fps, mpc=None):
         """Render HUD overlays"""
         # FPS counter
         self._draw_fps(surface, current_fps)
 
-        # LKA status
-        self._draw_lka_status(surface, lka)
+        # LKA status (both Pure Pursuit and MPC)
+        self._draw_lka_status(surface, lka, mpc)
 
         # Speed and steering info
         self._draw_telemetry(surface, car)
@@ -63,11 +63,14 @@ class HUD:
 
         surface.blit(text, rect)
 
-    def _draw_lka_status(self, surface, lka):
+    def _draw_lka_status(self, surface, lka, mpc=None):
         """Draw LKA status indicator"""
         if lka.active:
-            status_text = "LKA: ACTIVE"
+            status_text = "LKA: Pure Pursuit"
             color = GREEN
+        elif mpc and mpc.active:
+            status_text = "LKA: MPC"
+            color = (0, 200, 255)  # Cyan
         else:
             status_text = "LKA: OFF"
             color = RED

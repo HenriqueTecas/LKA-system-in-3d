@@ -20,6 +20,7 @@ from .config import *
 from .car import Car
 from .camera_sensor import CameraSensor
 from .lka_controller import PurePursuitLKA
+from .mpc_controller import MPCLaneKeeping
 from .track import SaoPauloTrack
 from .renderer import Renderer3D
 from .minimap import Minimap
@@ -97,8 +98,9 @@ def main():
     # Create camera sensor
     camera = CameraSensor(car)
 
-    # Create LKA controller
+    # Create LKA controllers
     lka = PurePursuitLKA(car, camera)
+    mpc = MPCLaneKeeping(car, camera)
 
     # Create renderer
     renderer = Renderer3D(WIDTH, HEIGHT)
@@ -125,16 +127,29 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_f:
+                    # Toggle Pure Pursuit LKA
+                    if mpc.active:
+                        mpc.deactivate()
                     lka.toggle()
+                elif event.key == pygame.K_g:
+                    # Toggle MPC LKA
+                    if lka.active:
+                        lka.deactivate()
+                    mpc.toggle()
 
         # Get keyboard state
         keys = pygame.key.get_pressed()
 
-        # Calculate LKA steering
-        lka_steering = lka.calculate_steering(track) if lka.active else None
+        # Calculate LKA steering (Pure Pursuit or MPC)
+        lka_steering = None
+        if lka.active:
+            lka_steering = lka.calculate_steering(track)
+        elif mpc.active:
+            lka_steering = mpc.calculate_steering(track)
 
-        # Update car
-        car.update(dt, keys, lka_steering, lka)
+        # Update car (pass both LKA controllers)
+        active_lka = lka if lka.active else (mpc if mpc.active else None)
+        car.update(dt, keys, lka_steering, active_lka)
 
         # Collision detection disabled for open-world driving
         # if not car.is_on_track(track):
@@ -152,8 +167,11 @@ def main():
         # Draw lane markers
         renderer.draw_lane_markers_3d(camera, track)
 
-        # Draw LKA lookahead points
+        # Draw Pure Pursuit lookahead points (yellow)
         renderer.draw_lookahead_point_3d(lka)
+
+        # Draw MPC predicted trajectory (silver)
+        renderer.draw_mpc_trajectory_3d(mpc)
 
         # Draw ONLY wheels (car body invisible for first-person view)
         car.draw_wheels_only_3d()
@@ -174,12 +192,12 @@ def main():
         overlay_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
         overlay_surface.fill((0, 0, 0, 0))
 
-        # Render HUD with FPS
+        # Render HUD with FPS (pass both controllers)
         current_fps = clock.get_fps()
-        hud.render(overlay_surface, car, camera, lka, current_fps)
+        hud.render(overlay_surface, car, camera, lka, current_fps, mpc)
 
-        # Render minimap
-        minimap_surface = minimap.render(car, camera, lka)
+        # Render minimap (pass both controllers)
+        minimap_surface = minimap.render(car, camera, lka, mpc)
         minimap_pos = (WIDTH - MINIMAP_SIZE - 10, 10)
 
         # Draw minimap background
@@ -193,7 +211,7 @@ def main():
         # Draw controls hint
         hint_font = pygame.font.Font(None, 20)
         hint_texts = [
-            "W/S: Accel/Brake | A/D: Steer | F: Toggle LKA | ESC: Exit"
+            "W/S: Accel/Brake | A/D: Steer | F: Pure Pursuit | G: MPC | ESC: Exit"
         ]
         y = HEIGHT - 30
         for hint in hint_texts:
