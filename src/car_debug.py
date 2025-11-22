@@ -15,8 +15,7 @@ from .config import (
     TIRE_CORNERING_STIFFNESS_REAR, WHEEL_RADIUS, WHEEL_INERTIA,
     TIRE_LONGITUDINAL_STIFFNESS, TIRE_STATIC_FRICTION, TIRE_KINETIC_FRICTION,
     AERO_CD, AERO_AREA, AIR_DENSITY, AERO_CL, AERO_DOWNFORCE_AREA,
-    ROLLING_RESISTANCE_COEFF, GRAVITY, WHEEL_POWER_WATTS, MIN_SPEED_FOR_POWER_LIMIT,
-    MAX_DRIVE_FORCE_FROM_TORQUE, MAX_BRAKE_FORCE, ENGINE_HORSEPOWER,
+    ROLLING_RESISTANCE_COEFF, GRAVITY, MAX_DRIVE_FORCE, MAX_BRAKE_FORCE,
     THROTTLE_TAU, BRAKE_TAU, STEERING_TAU, MAX_STEERING_ANGLE, MAX_STEERING_RATE,
     MAX_VELOCITY
 )
@@ -90,9 +89,7 @@ class Car:
         self.c_rr = float(ROLLING_RESISTANCE_COEFF)
         
         # Drive/brake limits
-        self.wheel_power = float(WHEEL_POWER_WATTS)  # W (power at wheels after drivetrain loss)
-        self.min_speed_power_limit = float(MIN_SPEED_FOR_POWER_LIMIT)  # m/s
-        self.max_torque_force = float(MAX_DRIVE_FORCE_FROM_TORQUE)  # N
+        self.max_drive_force = float(MAX_DRIVE_FORCE)  # N
         self.max_brake_force = float(MAX_BRAKE_FORCE)  # N
         
         # ====================================================================
@@ -114,13 +111,6 @@ class Car:
         self.max_velocity = float(MAX_VELOCITY)  # m/s
         self.max_steering_angle = float(MAX_STEERING_ANGLE)  # rad
         self.max_steering_rate = float(MAX_STEERING_RATE)  # rad/s
-        
-        # ====================================================================
-        # Performance Timing (for 0-100 km/h debug)
-        # ====================================================================
-        self.accel_test_active = False
-        self.accel_test_start_time = 0.0
-        self.accel_test_completed = False
         
         # ====================================================================
         # Actuator States and Time Constants
@@ -198,54 +188,29 @@ class Car:
     # MAIN UPDATE LOOP
     # ========================================================================
     
-    def update(self, dt, keys, lka_steering=None, lka_controller=None, override_throttle=None, override_brake=None):
-        """
-        Update car state based on user input and LKA control.
-        
-        Parameters:
-        - override_throttle: If set, overrides user throttle input (for hybrid controller)
-        - override_brake: If set, overrides user brake input (for hybrid controller)
-        """
+    def update(self, dt, keys, lka_steering=None, lka_controller=None):
+        """Update car state based on user input and LKA control."""
         
         # ====================================================================
-        # LONGITUDINAL CONTROL - User Input (or Override)
+        # LONGITUDINAL CONTROL - User Input
         # ====================================================================
-        # W = Forward throttle
-        # S = Reverse throttle
-        # SPACE = Brake
         desired_throttle = 0.0
         desired_brake = 0.0
-        
-        # Check if we have overrides from hybrid controller
-        if override_throttle is not None or override_brake is not None:
-            # Hybrid controller is providing speed control
-            desired_throttle = override_throttle if override_throttle is not None else 0.0
-            desired_brake = override_brake if override_brake is not None else 0.0
-            # DEBUG - print every 30 frames
-            if hasattr(self, '_debug_counter'):
-                self._debug_counter += 1
-            else:
-                self._debug_counter = 0
-            if self._debug_counter % 30 == 0:
-                throttle_str = f"{override_throttle:.3f}" if override_throttle is not None else "None"
-                brake_str = f"{override_brake:.3f}" if override_brake is not None else "None"
-                # print(f"[CAR INPUT] override_throttle={throttle_str}, override_brake={brake_str}")
-        else:
-            # Normal manual control
-            if keys[pygame.K_w] and not keys[pygame.K_s]:
-                desired_throttle = 1.0
-                desired_brake = 0.0
-            elif keys[pygame.K_s] and not keys[pygame.K_w]:
-                # Reverse gear
-                desired_throttle = -1.0
-                desired_brake = 0.0
-            elif keys[pygame.K_SPACE]:
-                # Brake pedal
+
+        if keys[pygame.K_w] and not keys[pygame.K_s]:
+            desired_throttle = 1.0
+            desired_brake = 0.0
+        elif keys[pygame.K_s] and not keys[pygame.K_w]:
+            # If moving forward, treat S as brake; if near zero, allow reverse
+            if self.velocity > 0.5:
                 desired_throttle = 0.0
                 desired_brake = 1.0
             else:
-                desired_throttle = 0.0
+                desired_throttle = -1.0
                 desired_brake = 0.0
+        else:
+            desired_throttle = 0.0
+            desired_brake = 0.0
 
         # ====================================================================
         # ACTUATOR DYNAMICS - First-order response
@@ -259,11 +224,6 @@ class Car:
             self.brake_state += (desired_brake - self.brake_state) * (dt / self.brake_tau)
         else:
             self.brake_state = desired_brake
-        
-        # DEBUG - show final actuator states
-        if desired_brake > 0 and override_brake is not None:
-            # print(f"[CAR ACTUATORS] throttle_state={self.throttle_state:.3f}, brake_state={self.brake_state:.3f}")
-            pass
 
         # ====================================================================
         # WHEEL DYNAMICS AND LONGITUDINAL FORCES
@@ -290,42 +250,60 @@ class Car:
         # Calculate slip ratios
         slip_ratios = self._calculate_wheel_slip_ratios()
         
+        # Calculate tire longitudinal forces
+        tire_forces = self._calculate_tire_forces(slip_ratios, normal_forces)
+        
         # ----------------------------------------------------------------
-        # SIMPLIFIED DRIVE MODEL (no wheel dynamics oscillation)
+        # Applied drive/brake torques at wheels
         # ----------------------------------------------------------------
-        # Drive force applied to rear wheels (RWD), handles forward and reverse
-        if abs(self.throttle_state) > 0.01:
-            # Calculate available drive force based on power curve
-            # At low speeds: torque-limited (max torque)
-            # At high speeds: power-limited (F = P / v)
-            speed_abs = max(abs(self.velocity), 0.1)  # Avoid division by zero
-            
-            if speed_abs < self.min_speed_power_limit:
-                # Low speed: torque-limited (constant force from max torque)
-                max_available_force = self.max_torque_force
-            else:
-                # High speed: power-limited (force decreases with speed)
-                max_available_force = self.wheel_power / speed_abs
-            
-            # Apply throttle position and direction
-            desired_drive_force = self.throttle_state * max_available_force
+        # Drive force applied to rear wheels (RWD)
+        if self.throttle_state > 0:
+            # Desired drive torque
+            desired_drive_force = self.throttle_state * self.max_drive_force
+            # Split between rear wheels
+            desired_torque_per_rear = (desired_drive_force * self.wheel_radius) / 2
             
             # Limit by available tire grip (prevent excessive spin)
-            rear_normal = normal_forces[2] + normal_forces[3]
-            max_grip_force = rear_normal * self.tire_mu_static
+            max_rear_torque = (normal_forces[2] * self.tire_mu_static + normal_forces[3] * self.tire_mu_static) * self.wheel_radius / 2
+            actual_torque_per_rear = min(desired_torque_per_rear, max_rear_torque)
             
-            # Apply drive force directly (simplified - no wheel dynamics)
-            f_drive = np.sign(desired_drive_force) * min(abs(desired_drive_force), max_grip_force)
+            wheel_torques = np.array([0.0, 0.0, actual_torque_per_rear, actual_torque_per_rear])
         else:
-            f_drive = 0.0
+            wheel_torques = np.zeros(4)
         
-        # Brake force (all wheels, proportional distribution)
+        # Brake torque (all wheels, proportional distribution)
         if self.brake_state > 0:
             desired_brake_force = self.brake_state * self.max_brake_force
+            # 60% front, 40% rear (typical brake bias)
+            brake_front_total = desired_brake_force * 0.6
+            brake_rear_total = desired_brake_force * 0.4
+            
             vel_sign = np.sign(self.velocity) if abs(self.velocity) > 0.01 else 0.0
-            f_brake = -desired_brake_force * vel_sign
-        else:
-            f_brake = 0.0
+            
+            brake_torques = np.array([
+                -brake_front_total * self.wheel_radius / 2 * vel_sign,  # FL
+                -brake_front_total * self.wheel_radius / 2 * vel_sign,  # FR
+                -brake_rear_total * self.wheel_radius / 2 * vel_sign,   # RL
+                -brake_rear_total * self.wheel_radius / 2 * vel_sign    # RR
+            ])
+            wheel_torques += brake_torques
+        
+        # Bearing friction/damping (resistance to rotation)
+        bearing_damping = 1.0  # N·m·s/rad
+        
+        # Calculate tire forces and torques
+        tire_torques = -tire_forces * self.wheel_radius  # Torque resisting wheel spin
+        damping_torques = -bearing_damping * self.wheel_omega
+        
+        # Net torque on each wheel
+        net_torques = wheel_torques + tire_torques + damping_torques
+        
+        # Update wheel angular velocities: τ = I·α
+        wheel_alpha = net_torques / self.wheel_inertia
+        self.wheel_omega += wheel_alpha * dt
+        
+        # Use tire forces for body dynamics
+        f_tire_total = np.sum(tire_forces)
         
         # Engine braking (when coasting)
         if abs(self.throttle_state) < 0.05:
@@ -350,51 +328,23 @@ class Car:
         # ====================================================================
         # VEHICLE BODY VELOCITY INTEGRATION
         # ====================================================================
-        # Net force on body (drive + brake + resistances)
-        f_net = f_drive + f_brake + f_engine_braking + f_drag + f_rolling + f_cornering_drag
+        # Net force on body (tire forces + resistances)
+        # Tire forces already include the reaction from wheel inertia via Newton's 3rd law
+        f_net = f_tire_total + f_engine_braking + f_drag + f_rolling + f_cornering_drag
         
         # Use total mass (body + wheels)
         acceleration = f_net / self.mass  # m/s²
         
-        # Update velocity
+                # DEBUG
+        if abs(self.velocity) < 5.0:  # Only print at low speeds
+            print(f'  f_tire={f_tire_total:.1f}, f_drag={f_drag:.1f}, f_rolling={f_rolling:.1f}, f_net={f_net:.1f}')
+        \n        # Update velocity
         self.velocity += acceleration * dt
-        
-        # 0-100 km/h acceleration test timing
-        speed_kmh = self.velocity * 3.6
-        if not self.accel_test_active and self.throttle_state > 0.9 and speed_kmh < 5.0:
-            # Start timing when full throttle applied from low speed
-            self.accel_test_active = True
-            self.accel_test_start_time = pygame.time.get_ticks() / 1000.0
-            self.accel_test_completed = False
-            print(f"\n🚀 0-100 km/h test started at {speed_kmh:.1f} km/h")
-            print(f"   Engine: {ENGINE_HORSEPOWER} hp, Max Force: {self.max_torque_force:.1f} N")
-        
-        if self.accel_test_active and not self.accel_test_completed and speed_kmh >= 100.0:
-            # Reached 100 km/h
-            elapsed_time = pygame.time.get_ticks() / 1000.0 - self.accel_test_start_time
-            self.accel_test_completed = True
-            print(f"\n✅ 100 km/h REACHED in {elapsed_time:.2f} seconds")
-            print(f"   Final speed: {speed_kmh:.1f} km/h")
-            print(f"   Drive force at 100 km/h: {f_drive:.1f} N")
-            print(f"   Drag at 100 km/h: {f_drag:.1f} N")
-            print(f"   Net force at 100 km/h: {f_net:.1f} N\n")
-        
-        # Update wheel rotation for animation (based on vehicle velocity)
-        distance_traveled = self.velocity * dt
-        self.wheel_rotation -= distance_traveled / self.wheel_radius
-        self.wheel_rotation = self.wheel_rotation % (2 * np.pi)
-        
-        # Update wheel angular velocities to match vehicle speed (no slip model)
-        self.wheel_omega[:] = self.velocity / self.wheel_radius
         
         # Snap to zero if nearly stopped with no input
         if abs(self.velocity) < 0.01 and desired_throttle == 0 and desired_brake == 0:
             self.velocity = 0.0
             self.wheel_omega[:] = 0.0  # Stop wheels too
-            # Reset acceleration test
-            if self.accel_test_active:
-                self.accel_test_active = False
-                self.accel_test_completed = False
         
         # Apply velocity limit
         self.velocity = np.clip(self.velocity, -self.max_velocity * 0.5, self.max_velocity)

@@ -41,7 +41,10 @@ PHYSICS_DT = 0.01
 # VEHICLE GEOMETRY (SI Units)
 # ============================================================================
 # Mass (kg)
-VEHICLE_MASS = 1500.0
+VEHICLE_BODY_MASS = 1420.0  # kg (body/chassis mass)
+WHEEL_MASS = 20.0  # kg (per wheel: tire + rim)
+VEHICLE_MASS = VEHICLE_BODY_MASS + 4 * WHEEL_MASS  # Total: 1500 kg
+
 # Moment of inertia around vertical axis (kg·m²)
 # Calculated using: I_z = (1/12) * m_body * (L² + W²) + m_wheels * r_wheels²
 # For BMW E36: ~2697 (body) + ~252 (wheels) ≈ 2950 kg·m²
@@ -55,11 +58,24 @@ VEHICLE_CG_TO_FRONT = 1.2
 VEHICLE_CG_TO_REAR = 1.5
 
 # ============================================================================
-# TIRE PARAMETERS
+# TIRE AND WHEEL PARAMETERS
 # ============================================================================
+# Wheel geometry
+WHEEL_RADIUS = 0.35  # m (tire radius)
+WHEEL_WIDTH = 0.225  # m (tire width)
+
+# Wheel rotational inertia (kg·m²)
+# Approximated as solid cylinder: I = 0.5 * m * r²
+WHEEL_INERTIA = 0.5 * WHEEL_MASS * WHEEL_RADIUS**2  # ≈ 1.225 kg·m²
+
 # Cornering stiffness front/rear (N/rad) - linear model
 TIRE_CORNERING_STIFFNESS_FRONT = 80000.0
 TIRE_CORNERING_STIFFNESS_REAR = 80000.0
+
+# Longitudinal slip parameters
+TIRE_LONGITUDINAL_STIFFNESS = 80000.0  # N (force per unit slip ratio - higher = better traction response)
+TIRE_STATIC_FRICTION = 1.0  # Peak friction coefficient (standard road tires on dry asphalt)
+TIRE_KINETIC_FRICTION = 0.8  # Sliding friction coefficient
 
 # ============================================================================
 # FORCES AND RESISTANCES
@@ -80,9 +96,25 @@ ROLLING_RESISTANCE_COEFF = 0.015  # Dimensionless coefficient
 # ============================================================================
 # DRIVETRAIN AND ACTUATORS
 # ============================================================================
-# Engine/drivetrain forces
-MAX_DRIVE_FORCE = 6000.0  # N (maximum drive force at wheels)
-MAX_BRAKE_FORCE = 12000.0  # N (maximum braking force at wheels)
+# Engine power (MAIN PARAMETER - adjust this to change car performance)
+ENGINE_HORSEPOWER = 200  # hp (brake horsepower)
+ENGINE_POWER_WATTS = ENGINE_HORSEPOWER * 745.7  # Convert hp to watts (1 hp = 745.7 W)
+
+# Drivetrain efficiency (power loss in transmission, differential, etc.)
+DRIVETRAIN_EFFICIENCY = 0.9  # 90% efficient (15% loss is typical)
+WHEEL_POWER_WATTS = ENGINE_POWER_WATTS * DRIVETRAIN_EFFICIENCY
+
+
+REFERENCE_VELOCITY = 18.0  # m/s
+MAX_DRIVE_FORCE_FROM_TORQUE = WHEEL_POWER_WATTS / REFERENCE_VELOCITY  # N
+
+# Speed where power becomes the limiting factor
+# Below this: constant force; Above this: force = power/velocity
+MIN_SPEED_FOR_POWER_LIMIT = REFERENCE_VELOCITY  # m/s
+
+MAX_TORQUE_AT_WHEELS = MAX_DRIVE_FORCE_FROM_TORQUE * WHEEL_RADIUS  # N·m
+
+MAX_BRAKE_FORCE = 14000.0  # N (maximum braking force at wheels)
 
 # Actuator time constants (seconds) - first-order response
 THROTTLE_TAU = 0.12

@@ -8,6 +8,7 @@ from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
 import numpy as np
+from scipy import interpolate
 
 
 class SaoPauloTrack:
@@ -19,7 +20,7 @@ class SaoPauloTrack:
     def __init__(self, offset_x=500, offset_y=500):
         self.offset_x = offset_x
         self.offset_y = offset_y
-        self.lane_width = 60  # 5 meters per lane at 12 pixels/meter
+        self.lane_width = 48  # 4 meters per lane at 12 pixels/meter
         self.track_width = 2 * self.lane_width  # 10 meters total (120 pixels)
 
         # Scale factor to achieve 4309m lap length
@@ -28,8 +29,8 @@ class SaoPauloTrack:
         # Scale: 51,708 / 2663.2 ≈ 19.4
         scale = 19.4
         
-        # Base centerline coordinates (original track shape)
-        self.centerline = [
+        # Base centerline coordinates (original track shape - control points)
+        control_points = [
             (800, 600), (750, 500), (650, 400), (550, 350), (450, 330),
             (350, 300), (250, 250), (200, 180), (180, 120), (200, 60),
             (300, 30), (500, 30), (700, 30), (900, 30), (1100, 50),
@@ -37,8 +38,13 @@ class SaoPauloTrack:
             (1100, 550), (1000, 600), (900, 600), (800, 600),
         ]
 
-        self.centerline = [(x * scale + offset_x, y * scale + offset_y)
-                          for x, y in self.centerline]
+        # Scale control points
+        control_points = [(x * scale + offset_x, y * scale + offset_y)
+                         for x, y in control_points]
+        
+        # Use control points directly as centerline
+        self.centerline = control_points
+
 
     def _offset_line(self, points, offset):
         """Offset a line perpendicular to its direction"""

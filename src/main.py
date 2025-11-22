@@ -24,6 +24,7 @@ from .car import Car
 from .realistic_camera import RealisticCameraSensor
 from .lka_controller import PurePursuitLKA
 from .mpc_controller import MPCLaneKeeping
+from .hybrid_controller import HybridLaneController
 from .track import SaoPauloTrack
 from .renderer import Renderer3D
 from .minimap import Minimap
@@ -108,6 +109,9 @@ def main():
     # Create LKA controllers
     lka = PurePursuitLKA(car, camera)
     mpc = MPCLaneKeeping(car, camera)
+    
+    # Create Hybrid Controller (new 3-mode system)
+    hybrid = HybridLaneController(car, camera)
 
     # Create renderer
     renderer = Renderer3D(WIDTH, HEIGHT)
@@ -129,6 +133,9 @@ def main():
     physics_dt = PHYSICS_DT
     accumulator = 0.0
     prev_time = time.perf_counter()
+    
+    # Initialize hybrid controller warnings
+    hybrid_warnings = {}
 
     while running:
         # Time management
@@ -147,16 +154,23 @@ def main():
             if event.type == pygame.KEYDOWN:
                 if event.key == pygame.K_ESCAPE:
                     running = False
-                elif event.key == pygame.K_f:
-                    # Toggle Pure Pursuit LKA
-                    if mpc.active:
-                        mpc.deactivate()
-                    lka.toggle()
-                elif event.key == pygame.K_g:
-                    # Toggle MPC LKA
-                    if lka.active:
-                        lka.deactivate()
-                    mpc.toggle()
+                elif event.key == pygame.K_1:
+                    # Hybrid Mode 1: MANUAL (no assistance)
+                    hybrid.set_mode(HybridLaneController.MODE_MANUAL)
+                elif event.key == pygame.K_2:
+                    # Hybrid Mode 2: WARNING (monitoring only)
+                    hybrid.set_mode(HybridLaneController.MODE_WARNING)
+                elif event.key == pygame.K_3:
+                    # Hybrid Mode 3: ASSIST (active control)
+                    hybrid.set_mode(HybridLaneController.MODE_ASSIST)
+                elif event.key == pygame.K_c:
+                    # Toggle camera view
+                    if renderer.camera_view_mode == "chase":
+                        renderer.camera_view_mode = "realistic"
+                        print("[Camera] Switched to REALISTIC camera view (lane detection POV)")
+                    else:
+                        renderer.camera_view_mode = "chase"
+                        print("[Camera] Switched to CHASE camera view")
 
         # Capture current key state (will be used during physics steps)
         keys = pygame.key.get_pressed()
@@ -167,6 +181,9 @@ def main():
             # Detect lanes once per physics step (shared by controllers and visualization)
             camera.detect_lanes(track)
             
+            # === HYBRID CONTROLLER (new 3-mode system) ===
+            hybrid_steering, hybrid_throttle, hybrid_brake, hybrid_warnings = hybrid.calculate_control(track)
+            
             # Calculate LKA steering (Pure Pursuit or MPC) at physics rate
             lka_steering = None
             if lka.active:
@@ -174,9 +191,26 @@ def main():
             elif mpc.active:
                 lka_steering = mpc.calculate_steering(track)
 
-            # Update car (pass both LKA controllers)
-            active_lka = lka if lka.active else (mpc if mpc.active else None)
-            car.update(physics_dt, keys, lka_steering, active_lka)
+            # Update car (use hybrid control if active, otherwise fallback to old LKA)
+            if hybrid.mode != HybridLaneController.MODE_MANUAL:
+                # Hybrid controller is active (warning or assist mode)
+                # In assist mode, it provides steering/throttle/brake
+                # In warning mode, it provides None but warnings are shown
+                active_lka = hybrid
+                if hybrid.mode == HybridLaneController.MODE_ASSIST and hybrid_steering is not None:
+                    # Use hybrid's steering command
+                    if hybrid_brake is not None and hybrid_brake > 0:
+                        # print(f"[MAIN] Passing to car.update: throttle={hybrid_throttle}, brake={hybrid_brake}")
+                        pass
+                    car.update(physics_dt, keys, hybrid_steering, active_lka, 
+                              override_throttle=hybrid_throttle, override_brake=hybrid_brake)
+                else:
+                    # Warning mode or no steering available - manual control
+                    car.update(physics_dt, keys, None, active_lka)
+            else:
+                # Manual mode or old LKA controllers
+                active_lka = lka if lka.active else (mpc if mpc.active else None)
+                car.update(physics_dt, keys, lka_steering, active_lka)
 
             # Collision detection disabled for open-world driving
             # if not car.is_on_track(track):
@@ -187,8 +221,8 @@ def main():
         # === 3D RENDERING ===
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        # Setup 3D view
-        renderer.setup_3d_view(car)
+        # Setup 3D view (pass camera for realistic view option)
+        renderer.setup_3d_view(car, camera)
 
         # Draw track
         track.draw_3d()
@@ -201,6 +235,9 @@ def main():
 
         # Draw MPC predicted trajectory (silver)
         renderer.draw_mpc_trajectory_3d(mpc)
+
+        # Draw Hybrid Controller target point and direction (yellow)
+        renderer.draw_hybrid_target_3d(hybrid, car)
 
         # Draw ONLY wheels (car body invisible for first-person view)
         car.draw_wheels_only_3d()
@@ -220,9 +257,9 @@ def main():
         # PERFORMANCE: Reuse pre-allocated surface (just clear it)
         overlay_surface.fill((0, 0, 0, 0))
 
-        # Render HUD with FPS (pass both controllers)
+        # Render HUD with Hybrid Controller status
         current_fps = clock.get_fps()
-        hud.render(overlay_surface, car, camera, lka, current_fps, mpc)
+        hud.render(overlay_surface, car, camera, current_fps, renderer.camera_view_mode, hybrid, hybrid_warnings)
 
         # Render minimap (pass both controllers)
         minimap_surface = minimap.render(car, camera, lka, mpc)

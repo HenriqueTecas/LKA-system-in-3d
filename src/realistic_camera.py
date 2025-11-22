@@ -64,10 +64,10 @@ class RealisticCameraSensor:
         self.min_detection_distance = 1.0  # meters (minimum distance)
         self.optimal_detection_distance = 30.0  # meters (100% confidence)
         self.good_detection_distance = 40.0  # meters (80% confidence)
-        self.max_detection_distance = 50.0  # meters (30% confidence)
-        self.sample_interval = 4.0  # Sample every 4.0 meters along lane (PERFORMANCE: 4x fewer points)
-        self.interpolation_interval = 6.0  # Interpolation density (PERFORMANCE: reduced computation)
-        self.detection_max_range = 50.0  # Maximum detection range
+        self.max_detection_distance = 60.0  # meters (30% confidence)
+        self.sample_interval = 6.0  # Sample every 4.0 meters along lane (PERFORMANCE: 4x fewer points)
+        self.interpolation_interval = 2.0  # Keep at 2.0m for performance
+        self.detection_max_range = 60.0  # Maximum detection range
         self.detection_min_range = 1.0  # Minimum detection range
         self.pixels_per_meter = float(PIXELS_PER_METER)
         self.use_uniform_sampling = True  # Use optimized uniform sampling
@@ -76,7 +76,7 @@ class RealisticCameraSensor:
         self.frame_rate = CAMERA_FRAME_RATE  # Hz
         self.frame_interval = 1.0 / float(self.frame_rate) if self.frame_rate > 0 else 0.0
         self.latency = float(CAMERA_LATENCY_MS) / 1000.0  # Convert ms to seconds
-        self.noise_std = float(CAMERA_NOISE_STD)  # meters (5cm spatial noise)
+        self.noise_std = 0  # meters (5cm spatial noise)
         
         self.last_capture_time = 0.0
         self._buffer = []  # Frame buffer for latency simulation
