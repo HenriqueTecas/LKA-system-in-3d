@@ -68,7 +68,7 @@ class Minimap:
         map_y = (y - car_y) * self.scale + self.size / 2
         return int(map_x), int(map_y)
 
-    def render(self, car, camera, lka, mpc=None):
+    def render(self, car, camera, lka, mpc=None, lane_measurements=None):
         """Render minimap with original 2D view"""
         # Fill with semi-transparent dark background
         self.surface.fill((20, 20, 20))  # Very dark gray background
@@ -81,7 +81,7 @@ class Minimap:
         self._draw_track_2d(car)
 
         # Draw camera FOV and detections
-        self._draw_camera_view_2d(camera, car)
+        self._draw_camera_view_2d(camera, car, lane_measurements)
 
         # Draw ALL LKA lane center points (small yellow dots)
         if lka.active and hasattr(lka, 'lane_center_points') and lka.lane_center_points:
@@ -138,7 +138,7 @@ class Minimap:
             p2 = centerline_scaled[i + 1]
             pygame.draw.line(self.surface, GRAY, p1, p2, 1)
 
-    def _draw_camera_view_2d(self, camera, car):
+    def _draw_camera_view_2d(self, camera, car, lane_measurements=None):
         """Draw camera FOV and detected lanes"""
         # Get camera position in meters, convert to pixels
         # Realistic camera returns (x, y, z), simple camera returns (x, y)
@@ -178,7 +178,10 @@ class Minimap:
         pygame.draw.line(self.surface, GREEN, camera_pos_scaled, fov_points_scaled[2], 2)
 
         # Draw detected lane points - ONLY FOR CURRENT LANE
-        left_lane, right_lane, center_lane = camera.detect_lanes(camera.car.track)
+        if lane_measurements is None:
+            left_lane, center_lane, right_lane = camera.last_measurement
+        else:
+            left_lane, center_lane, right_lane = lane_measurements
 
         # Determine which lane we're in and which boundaries to display
         current_lane = camera.current_lane
@@ -270,5 +273,4 @@ class Minimap:
         front_y = car_y_px + length_px * sin_theta
         front_minimap = self._world_to_minimap(front_x, front_y, car)
         pygame.draw.circle(self.surface, YELLOW, front_minimap, 5)
-
 

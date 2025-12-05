@@ -2,13 +2,12 @@
 Renderer Module - 3D OpenGL Scene Management
 Part of the 3D Robotics Lab simulation.
 """
-
 import pygame
 from pygame.locals import *
 from OpenGL.GL import *
-from OpenGL.GLU import *
 import numpy as np
 from .config import PIXELS_PER_METER
+from .glu_fallback import perspective, look_at, draw_sphere
 
 
 class Renderer3D:
@@ -36,53 +35,49 @@ class Renderer3D:
         glClearColor(0.6, 0.8, 1.0, 1.0)  # Sky blue background
 
     def setup_3d_view(self, car, camera_sensor=None):
-        """Setup 3D perspective for main view"""
+        """Setup 3D perspective for main view (supports lane-camera POV toggle)"""
         glViewport(0, 0, self.width, self.height)
         glMatrixMode(GL_PROJECTION)
         glLoadIdentity()
-        
+
         if self.camera_view_mode == "realistic" and camera_sensor is not None:
-            # Use actual lane detection camera parameters
             fov_deg = np.degrees(camera_sensor.horizontal_fov)
-            gluPerspective(fov_deg, self.width / self.height, 0.1, 1000.0)
-            
+            perspective(fov_deg, self.width / self.height, 0.1, 1000.0)
+
             glMatrixMode(GL_MODELVIEW)
             glLoadIdentity()
-            
-            # Get camera world position
+
             cam_x, cam_y, cam_z = camera_sensor.get_camera_position()
-            cam_pos_pixels = (cam_x * self.pixels_per_meter, 
-                            cam_y * self.pixels_per_meter, 
-                            cam_z * self.pixels_per_meter)
-            
-            # Calculate look-at point (10m ahead in car direction, accounting for pitch)
+            cam_pos_pixels = (cam_x * self.pixels_per_meter,
+                              cam_y * self.pixels_per_meter,
+                              cam_z * self.pixels_per_meter)
+
             look_distance = 20.0  # meters
             pitch = camera_sensor.pitch_angle
             look_x = cam_x + look_distance * np.cos(car.theta)
             look_y = cam_y + look_distance * np.sin(car.theta)
             look_z = cam_z - look_distance * np.tan(pitch)
             look_pos_pixels = (look_x * self.pixels_per_meter,
-                             look_y * self.pixels_per_meter,
-                             look_z * self.pixels_per_meter)
-            
-            gluLookAt(
-                cam_pos_pixels[0], cam_pos_pixels[1], cam_pos_pixels[2],
-                look_pos_pixels[0], look_pos_pixels[1], look_pos_pixels[2],
-                0, 0, 1  # Up vector
+                               look_y * self.pixels_per_meter,
+                               look_z * self.pixels_per_meter)
+
+            look_at(
+                (cam_pos_pixels[0], cam_pos_pixels[1], cam_pos_pixels[2]),
+                (look_pos_pixels[0], look_pos_pixels[1], look_pos_pixels[2]),
+                (0, 0, 1),
             )
         else:
-            # Chase camera (default)
-            gluPerspective(60, self.width / self.height, 1.0, 5000.0)
-            
+            perspective(60, self.width / self.height, 1.0, 5000.0)
+
             glMatrixMode(GL_MODELVIEW)
             glLoadIdentity()
-            
+
             # Hood camera position
             cam_pos, look_pos = car.get_hood_camera_position()
-            gluLookAt(
-                cam_pos[0], cam_pos[1], cam_pos[2],  # Camera position
-                look_pos[0], look_pos[1], look_pos[2],  # Look-at point
-                0, 0, 1  # Up vector
+            look_at(
+                (cam_pos[0], cam_pos[1], cam_pos[2]),
+                (look_pos[0], look_pos[1], look_pos[2]),
+                (0, 0, 1),
             )
 
     def draw_lane_markers_3d(self, camera, track):
@@ -140,9 +135,7 @@ class Renderer3D:
 
         # Draw sphere at top - OPTIMIZED: reduced from 8,8 to 6,6
         glTranslatef(0, 0, height)
-        quadric = gluNewQuadric()
-        gluSphere(quadric, radius, 6, 6)  # Reduced detail for performance
-        gluDeleteQuadric(quadric)
+        draw_sphere(radius, 6, 6)
 
         glPopMatrix()
 
@@ -170,9 +163,7 @@ class Renderer3D:
                 # Draw small sphere at top
                 glPushMatrix()
                 glTranslatef(px, py, 15)
-                quadric = gluNewQuadric()
-                gluSphere(quadric, 4, 4, 4)  # Small sphere
-                gluDeleteQuadric(quadric)
+                draw_sphere(4, 4, 4)  # Small sphere
                 glPopMatrix()
 
         # Draw the SELECTED lookahead point (larger, bright yellow)
@@ -193,9 +184,7 @@ class Renderer3D:
             # Draw large sphere at top (this is the actual target)
             glPushMatrix()
             glTranslatef(px, py, 35)
-            quadric = gluNewQuadric()
-            gluSphere(quadric, 8, 6, 6)  # Large sphere for selected point
-            gluDeleteQuadric(quadric)
+            draw_sphere(8, 6, 6)  # Large sphere for selected point
             glPopMatrix()
 
         glEnable(GL_LIGHTING)
@@ -227,17 +216,15 @@ class Renderer3D:
             # Draw sphere at top
             glPushMatrix()
             glTranslatef(px, py, 20)
-            quadric = gluNewQuadric()
-            gluSphere(quadric, 5, 6, 6)  # Medium-sized sphere
-            gluDeleteQuadric(quadric)
+            draw_sphere(5, 6, 6)  # Medium-sized sphere
             glPopMatrix()
 
         glEnable(GL_LIGHTING)
 
     def draw_hybrid_target_3d(self, hybrid, car):
-        """Draw Hybrid Controller's target point and direction vector (YELLOW)"""
+        """Draw Hybrid Controller's target point and direction vector (yellow)"""
         if hybrid.mode == hybrid.MODE_MANUAL:
-            return  # No visualization in manual mode
+            return
 
         glDisable(GL_LIGHTING)
 
@@ -247,71 +234,59 @@ class Renderer3D:
             for cx, cy in hybrid.center_line_points:
                 px = cx * self.pixels_per_meter
                 py = cy * self.pixels_per_meter
-                
-                # Draw small vertical line
+
                 glLineWidth(2)
                 glBegin(GL_LINES)
                 glVertex3f(px, py, 0)
                 glVertex3f(px, py, 15)
                 glEnd()
-                
-                # Draw small sphere
+
                 glPushMatrix()
                 glTranslatef(px, py, 15)
-                quadric = gluNewQuadric()
-                gluSphere(quadric, 4, 4, 4)
-                gluDeleteQuadric(quadric)
+                draw_sphere(4, 4, 4)
                 glPopMatrix()
 
         # Draw target point if available (BRIGHT YELLOW SPHERE)
         if hybrid.target_point is not None:
             tx, ty = hybrid.target_point
-            # Convert meters to pixels
             px = tx * self.pixels_per_meter
             py = ty * self.pixels_per_meter
 
-            # Draw vertical marker
-            glColor3f(1.0, 1.0, 0.0)  # Bright yellow
+            glColor3f(1.0, 1.0, 0.0)
             glLineWidth(5)
             glBegin(GL_LINES)
             glVertex3f(px, py, 0)
             glVertex3f(px, py, 40)
             glEnd()
 
-            # Draw large sphere at top (this is the target the car is following)
             glPushMatrix()
             glTranslatef(px, py, 40)
-            quadric = gluNewQuadric()
-            gluSphere(quadric, 10, 8, 8)  # Large bright yellow sphere
-            gluDeleteQuadric(quadric)
+            draw_sphere(10, 8, 8)
             glPopMatrix()
 
         # Draw direction vector from car to target (YELLOW ARROW)
         if hybrid.target_direction is not None:
             car_x = car.x * self.pixels_per_meter
             car_y = car.y * self.pixels_per_meter
-            
-            # Draw direction vector (15 meters long)
+
             vector_length = 15.0 * self.pixels_per_meter
             end_x = car_x + vector_length * np.cos(hybrid.target_direction)
             end_y = car_y + vector_length * np.sin(hybrid.target_direction)
-            
-            # Draw main arrow line
-            glColor3f(1.0, 1.0, 0.0)  # Bright yellow
+
+            glColor3f(1.0, 1.0, 0.0)
             glLineWidth(4)
             glBegin(GL_LINES)
             glVertex3f(car_x, car_y, 25)
             glVertex3f(end_x, end_y, 25)
             glEnd()
-            
-            # Draw arrowhead
+
             arrow_size = 20
-            arrow_angle = 0.4  # radians
+            arrow_angle = 0.4
             left_x = end_x - arrow_size * np.cos(hybrid.target_direction - arrow_angle)
             left_y = end_y - arrow_size * np.sin(hybrid.target_direction - arrow_angle)
             right_x = end_x - arrow_size * np.cos(hybrid.target_direction + arrow_angle)
             right_y = end_y - arrow_size * np.sin(hybrid.target_direction + arrow_angle)
-            
+
             glBegin(GL_TRIANGLES)
             glVertex3f(end_x, end_y, 25)
             glVertex3f(left_x, left_y, 25)
@@ -319,9 +294,3 @@ class Renderer3D:
             glEnd()
 
         glEnable(GL_LIGHTING)
-
-
-
-
-
-

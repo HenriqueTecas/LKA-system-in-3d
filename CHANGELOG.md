@@ -1,5 +1,36 @@
 # Changelog - Physics Enrichment & Code Organization
 
+## Date: 2025-11-20
+
+## Summary
+Task 4 completed with live lane-detection time-series logging and HUD plot, plus CSV export; vehicle physics extended with weight transfer, simple suspension, and an HL friction-limited tire model (downforce-aware) with stability guarding.
+
+---
+
+## 🟢 Lane Detection Logger & Plot
+- Added `LaneDetectionLogger` (`src/lane_logger.py`) to record detections each physics step.
+- Streams detections to timestamped CSV files under `logs/` (left/right/center offsets, confidences, point counts).
+- Renders a rolling HUD chart below the minimap showing left/right boundaries and lane center offsets over the last seconds.
+- Integrated into `src/main.py` so controllers and visualization share a single detection call per step; logger closes cleanly on exit.
+- HUD plot now shows the active CSV filename for traceability and draws every frame (fixed flashing).
+
+## 🚗 Vehicle Dynamics Additions
+- Added CG height and spring-damper pitch/roll model to capture load transfer under accel/brake/turn.
+- Replaced lateral Pacejka with an HL friction-limited tire model (μ-based traction/lateral cap using downforce).
+- Stability guard still caps lateral accel; HUD shows saturation states for tuning.
+- Added a console starter menu to tweak key parameters (steer/brake ramps and stability cap) before launch.
+
+## 🎮 Control/Vehicle Refinements
+- Added input shaping constants (steer/brake ramps, deadzone, stability lat-accel cap) in `src/config.py`.
+- Applied to `Car.update`: smoother manual steering with ramp + deadzone, brake ramping, stability guard that caps lateral acceleration, and saturation flags.
+- HUD surfaces steering/velocity saturation status for quick tuning feedback.
+
+## 📷 Sensor/Minimap Cleanup
+- Removed duplicate `compute_homography` definition in `realistic_camera.py`.
+- Minimap now reuses the latest lane detections instead of triggering extra detect calls during rendering.
+
+---
+
 ## Date: 2025-11-17
 
 ## Summary
@@ -281,7 +312,7 @@ All organization changes preserve original functionality:
 ##  Future Improvements
 
 ### Suggested Enhancements
-1. **Tire Model:** Upgrade from linear to Pacejka "Magic Formula"
+1. **Tire Model:** Extend HL friction model with combined-slip or brush/Pacejka upgrade
 2. **Weight Transfer:** Dynamic load distribution during braking/acceleration
 3. **Suspension:** Spring-damper system for pitch/roll dynamics
 4. **Differential:** Torque distribution between wheels

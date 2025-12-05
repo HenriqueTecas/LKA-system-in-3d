@@ -1,98 +1,97 @@
-﻿"""
+"""
 Hybrid Controller Module - Direction-based LKA + Predictive Speed Control
 Part of the 3D Robotics Lab simulation.
 
 Combines:
 - Direction-following LKA (tangent-based, single-line capable)
-- MPC-based speed prediction (curve detection, anticipatory braking)
+- MPC-style speed prediction (curve detection, anticipatory braking)
 - 3 control modes: Manual, Warning, Assist
 """
 
-import pygame
-from pygame.locals import *
-from OpenGL.GL import *
-from OpenGL.GLU import *
 import numpy as np
-from scipy.stats import norm as scipy_norm
 
 
 class HybridLaneController:
     """
     Hybrid Lane Keeping and Speed Control System
-    
+
     Features:
     - Direction-based steering (follows lane tangent)
     - Single-line operation (works with only one boundary visible)
-    - Predictive curve detection (looks ahead 2.7 seconds)
+    - Predictive curve detection (looks ahead ~2.7 seconds)
     - Comfortable anticipatory braking (0.3g limit)
     - 3 modes: Manual / Warning / Assist
     """
-    
+
     # Control Modes
     MODE_MANUAL = 0      # No assistance (full manual control)
     MODE_WARNING = 1     # Monitoring only (warnings, no control)
     MODE_ASSIST = 2      # Active assistance (blended control)
-    
+
     def __init__(self, car, camera):
         self.car = car
         self.camera = camera
-        
-        # Current mode
+
+        # Current mode and intervention state
         self.mode = self.MODE_MANUAL
-        
+        self.intervening = False  # True when assist temporarily takes over
+
         # Debug flag
-        self.debug = True  # Set to False to disable debug output
-        
+        self.debug = False  # Set to True to enable debug output
+
         # ================================================================
         # DIRECTION FOLLOWING PARAMETERS (LKA)
         # ================================================================
-        self.lane_width = 4.0  # meters (actual lane width)
+        self.lane_width = 4.0  # meters (match narrower lane width from reference)
         self.min_points_for_direction = 4  # minimum points to trust direction
-        
-        # Speed-adaptive lookahead (prevents short lookahead oscillation)
-        self.min_lookahead_distance = 15.0  # meters - minimum at low speeds
-        self.max_lookahead_distance = 30.0  # meters - maximum at high speeds
-        self.lookahead_speed_factor = 0.5  # seconds - lookahead = speed * factor (time-based)
-        
+
         # Rolling MEDIAN smoothing (BFMC professional approach - uses median not average)
         self.steering_history = []  # Store last N steering angles
         self.rolling_median_window = 3  # Increased to 3 for better high-speed stability
         self.last_steering = 0.0  # Fallback when lanes lost (BFMC approach)
-        
+        self.last_heading_error = 0.0  # Cache heading error vs lane tangent for warnings
+        self.last_lateral_error = 0.0  # Cache lateral error for warnings
+        self.steering_lpf_alpha = 0.10  # low-pass filter for smoother outputs
+
         # Adaptive lane width for sharp turns (BFMC technique)
         self.base_lane_offset = self.lane_width / 2.0  # Base offset for virtual center
         self.sharp_turn_threshold = 0.0001  # Curvature threshold for sharp turn detection
         self.sharp_turn_multiplier = 1.3  # Widen virtual lane by 30% in sharp turns
-        
+
         # Image-height-equivalent reference (BFMC uses image height in pixels ~720)
         # Balanced at 14m for good curve entry without over-aggressiveness
         self.image_height_equivalent = 14.0  # meters - balanced for stability
-        
+
         # Heading error correction (fixes post-curve oscillation)
-        self.heading_correction_weight = 0.4  # Weight for heading error term
-        
+        self.heading_correction_weight = 0.4  # Match controller2 feel
+
         # ================================================================
         # SPEED PREDICTION PARAMETERS (MPC-based)
         # ================================================================
         self.prediction_horizon = 25  # steps (increased to see further ahead)
         self.prediction_dt = 0.18  # seconds per step
-        self.lateral_accel_limit = 0.3 * 9.81  # 0.5g safe limit (increased from 0.3g to prevent slip)
-        
+        self.lateral_accel_limit = 0.3 * 9.81  # 0.3g safe limit
+
         # Speed control
-        self.comfort_margin = 0.85  # target 85% of max safe speed (more conservative for safety)
-        self.brake_threshold = 0.85  # start braking at 85% of safe speed (much earlier!)
-        self.max_comfort_decel = 1.0 * 9.81  # 1.0g maximum braking (full brake capability)
-        self.accel_threshold = 1  # accelerate only if below 75% of target (wait longer before accelerating)
-        
+        self.comfort_margin = 0.82  # target ~82% of max safe speed (stricter)
+        self.brake_threshold = 0.85  # start braking earlier to be conservative
+        self.max_comfort_decel = 1.0 * 9.81  # 1.0g maximum braking
+        self.accel_threshold = 1.0  # accelerate only if below threshold ratio
+
         # Curve radius estimation (running average)
         self.radius_history = []
         self.radius_history_size = 3
-        
+
         # Track minimum safe speed in current curve
         self.in_curve = False
         self.curve_min_safe_speed = float('inf')
         self.curve_entry_threshold = 500  # meters - radius below this means we're in a curve
-        
+
+        # Cached lane/speed state for robustness
+        self.last_known_lane = None
+        self._last_safe_speed = None
+        self._last_curve_radius = None
+
         # ================================================================
         # INTERVENTION PARAMETERS (Mode 3: Assist)
         # ================================================================
@@ -100,7 +99,8 @@ class HybridLaneController:
         self.no_intervention_zone = 0.5  # meters from center
         self.gentle_intervention_zone = 1.5  # meters from center
         # Beyond gentle zone = strong intervention
-        
+        self.intervention_release_speed_margin = 1.05  # exit assist when back under ~105% of safe speed
+
         # ================================================================
         # WARNING SYSTEM (Mode 2: Warning)
         # ================================================================
@@ -110,11 +110,11 @@ class HybridLaneController:
             'time_to_crossing': False
         }
         self.warning_thresholds = {
-            'lateral_offset_warn': 1.0,  # meters
+            'lateral_offset_warn': 1.2,  # meters (looser to avoid false warnings)
             'time_to_crossing_warn': 1.0,  # seconds
-            'speed_margin_warn': 1.15  # 15% over safe speed
+            'speed_margin_warn': 1.05  # 5% over safe speed (stricter)
         }
-        
+
         # ================================================================
         # VISUALIZATION DATA
         # ================================================================
@@ -125,843 +125,737 @@ class HybridLaneController:
         self.current_curve_radius = float('inf')
         self.safe_speed = None
         self.intervention_strength = 0.0
-        
+        self.heading_divergence_threshold = 0.2  # rad; require stronger divergence
+        self.heading_divergence_offset_gate = 0.4  # m; ignore tiny offsets for divergence checks
+        self.heading_divergence_heading_gate = 0.05  # rad; ignore tiny heading noise
+        self.lane_offset_intervention = 0.7  # meters; stricter lane drift trigger
+        self.speed_overshoot_margin = 1.03  # 3% over safe speed triggers assist
+        self.release_stable_frames = 5  # consecutive frames required before releasing assist
+        self._stable_release_counter = 0
+        self.hazard_stable_frames = 2  # consecutive hazard frames to engage assist
+        self._hazard_counter = 0
+        self.heading_target_window_enter = 0.14  # rad (~8 deg) vs next target point for engage
+        self.heading_target_window_release = 0.08  # rad (~4.5 deg) for release
+        self.lane_departure_brake_cap = 0.5  # cap lane-departure braking (avoid full stop)
+        self.curvature_sticky_threshold = 0.0012  # keep assist engaged briefly in tighter curves
+        self.curve_hold_frames = 8
+        self._curve_hold_counter = 0
+        self._steering_curvature_proxy = 0.0
+
     def set_mode(self, mode):
         """Set control mode (0=Manual, 1=Warning, 2=Assist)"""
         if mode in [self.MODE_MANUAL, self.MODE_WARNING, self.MODE_ASSIST]:
             self.mode = mode
             self.warnings = {k: False for k in self.warnings}  # Clear warnings
-            # Mode change acknowledged (debug prints removed)
+            print(f"Hybrid Controller Mode: {['MANUAL', 'WARNING', 'ASSIST'][mode]}")
             return True
         return False
-    
+
     def get_mode_name(self):
         """Get current mode name"""
         return ['MANUAL', 'WARNING', 'ASSIST'][self.mode]
-    
+
     @property
     def active(self):
         """Return True if controller is active (not in manual mode)"""
         return self.mode != self.MODE_MANUAL
-    
+
     def deactivate(self):
         """Deactivate controller (set to manual mode)"""
         self.set_mode(self.MODE_MANUAL)
-    
+
     def calculate_control(self, track):
         """
         Main control loop
-        Returns: (steering_angle, throttle, brake, warnings)
+        Returns: (steering_angle, throttle, brake, warnings, intervening)
         """
         if self.mode == self.MODE_MANUAL:
             # No assistance
-            return None, None, None, {}
-        
+            self.intervening = False
+            return None, None, None, {}, False
+
         # Get lane detection from camera
         left_lane, center_lane, right_lane = self.camera.last_measurement
         current_lane = self.camera.current_lane
-        
-        # Determine lane boundaries based on which lane we're in
-        if current_lane == "LEFT":
-            lane_left = left_lane
-            lane_right = center_lane
-        elif current_lane == "RIGHT":
-            lane_left = center_lane
-            lane_right = right_lane
+
+        active_lane = self._select_active_lane(current_lane, left_lane, center_lane, right_lane)
+        if active_lane in ("LEFT", "RIGHT"):
+            self.last_known_lane = active_lane
         else:
-            # Unknown lane
-            return None, None, None, {}
-        
+            self.intervening = False
+            return None, None, None, {}, False
+
+        # Determine lane boundaries based on which lane we're in (fallback to nearest available edge)
+        if active_lane == "LEFT":
+            lane_left = left_lane if len(left_lane) > 0 else center_lane
+            lane_right = center_lane if len(center_lane) > 0 else right_lane
+        else:
+            lane_left = center_lane if len(center_lane) > 0 else left_lane
+            lane_right = right_lane if len(right_lane) > 0 else center_lane
+
         # ============================================================
         # STEERING CONTROL (Direction Following)
         # ============================================================
         current_speed = abs(self.car.velocity)
         steering_command = self._calculate_steering_direction(
-            lane_left, lane_right, track, current_speed
+            lane_left, lane_right, current_speed
         )
-        
+
         # ============================================================
         # SPEED CONTROL (Curve Prediction)
         # ============================================================
         speed_command = self._calculate_speed_control(
-            lane_left, lane_right, track
+            lane_left, lane_right
         )
-        
-        if self.debug and speed_command:
-            # print(f"[HYBRID CALC] Speed command: {speed_command['action']}, Brake={speed_command.get('brake', 0):.2f}, Throttle={speed_command.get('throttle', 0):.2f}, Radius={speed_command.get('curve_radius', 0):.1f}m")
-            pass
-        
+        lane_offset = self._estimate_lane_offset()
+
         # ============================================================
         # MODE-SPECIFIC BEHAVIOR
         # ============================================================
         if self.mode == self.MODE_WARNING:
-            # Warning mode: monitor only, no control
-            self._update_warnings(steering_command, speed_command)
-            return None, None, None, self.warnings
-        
-        elif self.mode == self.MODE_ASSIST:
-            # Assist mode: blend with manual control
-            steering, throttle, brake = self._apply_blended_control(
-                steering_command, speed_command
-            )
-            if self.debug:
-                steering_str = f"{steering:.3f}" if steering is not None else "None"
-                throttle_str = f"{throttle:.3f}" if throttle is not None else "None"
-                brake_str = f"{brake:.3f}" if brake is not None else "None"
-                # print(f"[HYBRID OUTPUT] Returning: Steering={steering_str}, Throttle={throttle_str}, Brake={brake_str}")
-            self._update_warnings(steering_command, speed_command)
-            return steering, throttle, brake, self.warnings
-        
-        return None, None, None, {}
-    
-    def _calculate_steering_direction(self, lane_left, lane_right, track, current_speed):
-        """
-        Calculate steering using weighted error approach (inspired by professional LKA systems)
-        Uses weighted average of lateral errors along the path
-        """
+            # Warning mode: monitor, surface lane drift + overspeed warnings
+            self._update_warnings(steering_command, speed_command, lane_offset=lane_offset, speed_only=False)
+            self.intervening = False
+            return None, None, None, self.warnings, False
+
+        # Assist mode: provide steering and throttle/brake when needed
+        self._update_warnings(steering_command, speed_command, lane_offset=lane_offset)
+        self._update_intervention_state(lane_offset, speed_command)
+
+        # Base commands from speed planner (default to coasting if absent)
+        throttle_cmd = 0.0
+        brake_cmd = 0.0
+        if speed_command:
+            throttle_cmd = speed_command.get('throttle', 0.0)
+            brake_cmd = speed_command.get('brake', 0.0)
+
+        # If we are intervening, enforce braking when drifting or overspeeding
+        if self.intervening:
+            lateral_speed_est = 0.0
+            if steering_command is not None:
+                lateral_speed_est = abs(self.car.velocity) * abs(np.tan(steering_command))
+
+            lane_brake = 0.0
+            if self.warnings.get('lane_departure'):
+                lane_brake = np.clip(
+                    (abs(lane_offset) / self.lane_width) + (lateral_speed_est / 8.0),
+                    0.0,
+                    self.lane_departure_brake_cap,
+                )
+
+            overspeed_brake = 0.0
+            if speed_command and speed_command.get('action') == 'brake':
+                overspeed_brake = speed_command.get('brake', 0.0) or 0.0
+            elif self.safe_speed and self.safe_speed > 0:
+                current_speed = abs(self.car.velocity)
+                if current_speed > self.safe_speed * self.speed_overshoot_margin:
+                    overspeed_brake = np.clip(
+                        (current_speed - self.safe_speed) / (self.safe_speed + 1e-3),
+                        0.0,
+                        1.0,
+                    )
+
+            brake_cmd = max(brake_cmd or 0.0, lane_brake, overspeed_brake)
+            if brake_cmd > 0:
+                throttle_cmd = 0.0
+
+        # In assist mode the system always commands steering/throttle/brake; human input is ignored.
+        return steering_command, throttle_cmd, brake_cmd, self.warnings, self.intervening
+
+    # =======================================================================
+    # INTERNAL METHODS - STEERING
+    # =======================================================================
+    def _calculate_steering_direction(self, lane_left, lane_right, current_speed):
+        """Compute steering toward a smoothed, densified centerline with adaptive lookahead."""
         car_x, car_y, car_theta = self.car.x, self.car.y, self.car.theta
-        
-        # Check what we have visible
+
         has_left = len(lane_left) >= self.min_points_for_direction
         has_right = len(lane_right) >= self.min_points_for_direction
-        
-        if self.debug:
-            # Debug prints removed
-            pass
-        
+
         if not has_left and not has_right:
-            # No boundaries detected - use last steering
-            return self.last_steering  # BFMC: Keep last good steering when lanes lost
-        
-        # Build center line from available boundaries
-        # Camera already provides densely interpolated boundaries (2.0m spacing)
+            return self.last_steering
+
+        # Build center line
         if has_left and has_right:
-            # Both boundaries: create PREDICTIVE center line using polynomial
             n = min(len(lane_left), len(lane_right))
-            
-            # Simple average as baseline
             center_avg = [
                 ((lane_left[i][0] + lane_right[i][0]) / 2.0,
                  (lane_left[i][1] + lane_right[i][1]) / 2.0)
                 for i in range(n)
             ]
-            
-            # Fit polynomial to averaged center for predictive path
             if len(center_avg) >= 3:
                 try:
                     points_x = np.array([p[0] for p in center_avg])
                     points_y = np.array([p[1] for p in center_avg])
-                    coeffs = np.polyfit(points_x, points_y, 2)
-                    a, b, c = coeffs
-                    
-                    # ADAPTIVE PREDICTIVE LOOKAHEAD based on curvature and speed
+                    a, b, c = np.polyfit(points_x, points_y, 2)
                     curvature = abs(a)
-                    
-                    # Base lookahead: 2 points (4m)
-                    # Sharp curves: reduce to 0-1 points to avoid cutting corners
-                    # High speed: increase to 3 points for stability
                     base_lookahead = 2
-                    
-                    # Reduce lookahead in sharp curves (high curvature)
-                    if curvature > 0.0002:  # Very sharp curve
-                        lookahead_points = 0  # No prediction, follow exactly
-                    elif curvature > 0.0001:  # Sharp curve
-                        lookahead_points = 1  # Minimal prediction
-                    else:  # Gentle curve or straight
+                    if curvature > 0.0002:
+                        lookahead_points = 0
+                    elif curvature > 0.0001:
+                        lookahead_points = 1
+                    else:
                         lookahead_points = base_lookahead
-                        # Increase at high speed for stability
-                        if current_speed > 15.0:  # > 54 km/h
+                        if current_speed > 15.0:
                             lookahead_points = 3
-                    
-                    # Create predictive center with adaptive lookahead
+
                     self.center_line_points = []
                     for i, x_val in enumerate(points_x):
                         if lookahead_points > 0:
                             lookahead_idx = min(i + lookahead_points, len(points_x) - 1)
                             x_lookahead = points_x[lookahead_idx]
-                            
-                            # Polynomial at lookahead
                             y_poly = a * x_lookahead**2 + b * x_lookahead + c
                             tangent_slope = 2 * a * x_lookahead + b
-                            
-                            # Project back to current position with lookahead geometry
                             y_current = y_poly - (x_lookahead - x_val) * tangent_slope
                             self.center_line_points.append((x_val, y_current))
                         else:
-                            # No prediction in very sharp curves - use exact center
                             self.center_line_points.append(center_avg[i])
-                    
-                    # Debug prints removed for BOTH boundaries
-                except:
-                    # Fallback to simple average if polynomial fails
+                except Exception:
                     self.center_line_points = center_avg
             else:
                 self.center_line_points = center_avg
-                # Fallback: simple average used
         elif has_left:
-            # Only left boundary: create virtual center
             self.center_line_points = self._create_virtual_center(
                 lane_left, car_x, car_y, car_theta, offset_right=True, current_speed=current_speed
             )
-            # Left boundary only: using virtual center
         else:
-            # Only right boundary: create virtual center
             self.center_line_points = self._create_virtual_center(
                 lane_right, car_x, car_y, car_theta, offset_right=False, current_speed=current_speed
             )
-            # Right boundary only: using virtual center
-        
-        if len(self.center_line_points) > 0:
-            first_pt = self.center_line_points[0]
-            last_pt = self.center_line_points[-1]
-        
+
         if len(self.center_line_points) < 2:
-            # Not enough center points
-            return None
-        
-        # Calculate weighted lateral error (professional approach adapted for 3D)
-        # Key insight: Weight by FORWARD DISTANCE, not total distance
-        # Closer points (in front of car) get higher weight
-        lateral_errors = []
-        forward_distances = []
-        
-        # Calculate car's forward and perpendicular directions
-        forward_x = np.cos(car_theta)  # forward direction
+            return self.last_steering
+
+        forward_x = np.cos(car_theta)
         forward_y = np.sin(car_theta)
-        perp_x = -np.sin(car_theta)    # perpendicular to heading (positive = left)
+        perp_x = -np.sin(car_theta)
         perp_y = np.cos(car_theta)
-        
-        # Debug prints removed for steering calculation
-        
-        points_behind = 0
-        for i, (px, py) in enumerate(self.center_line_points):
-            # Vector from car to path point
-            dx = px - car_x
-            dy = py - car_y
-            
-            # Project onto car's forward axis (how far ahead this point is)
-            forward_dist = dx * forward_x + dy * forward_y
-            
-            # Only consider points ahead of the car
-            if forward_dist < 0.1:  # Skip points behind or at car
-                points_behind += 1
-                continue
-            
-            # Project onto car's perpendicular axis (lateral error)
-            # NOTE: We want NEGATIVE when path is to the right (we should steer right)
-            # and POSITIVE when path is to the left (we should steer left)
-            # The perpendicular vector points LEFT, so dx*perp_x + dy*perp_y gives:
-            # POSITIVE when point is to the LEFT, NEGATIVE when point is to the RIGHT
-            lateral_error = dx * perp_x + dy * perp_y
-            
-            # initial points suppressed for cleaner output
-            
-            lateral_errors.append(lateral_error)
-            forward_distances.append(forward_dist)
-        
-        # points behind/ahead summary suppressed
-        
-        if len(lateral_errors) == 0:
-            # No valid forward points - use last steering
-            return self.last_steering  # BFMC: Keep last good steering
-        
-        # Weight by inverse forward distance (professional approach)
-        # Closer points (smaller forward distance) get higher weight
-        # Using survival function approach from professional code
-        forward_distances = np.array(forward_distances)
-        lateral_errors = np.array(lateral_errors)
-        
-        # SPEED-ADAPTIVE LOOKAHEAD: Prevents oscillation from too-short lookahead at high speeds
-        # At low speeds: shorter lookahead for tight maneuvers
-        # At high speeds: longer lookahead for smooth, stable control
-        current_speed = abs(self.car.velocity)
-        speed_based_lookahead = current_speed * self.lookahead_speed_factor
-        max_lookahead = np.clip(
-            speed_based_lookahead,
-            self.min_lookahead_distance,
-            self.max_lookahead_distance
-        )
-        close_enough_mask = forward_distances <= max_lookahead
-        
-        if np.sum(close_enough_mask) > 0:
-            # Filter to only use close points
-            forward_distances = forward_distances[close_enough_mask]
-            lateral_errors = lateral_errors[close_enough_mask]
-        
-        # Adaptive lookahead debug output removed
-        
-        # Normalize forward distances to [0, 1] range
-        max_dist = np.max(forward_distances)
-        min_dist = np.min(forward_distances)
-        if max_dist - min_dist > 0.1:
-            norm_dists = (forward_distances - min_dist) / (max_dist - min_dist)
+
+        # Densify and smooth center line to avoid jagged steering, more points in curves
+        dense_points = []
+        for i in range(len(self.center_line_points) - 1):
+            p1 = self.center_line_points[i]
+            p2 = self.center_line_points[i + 1]
+            dense_points.append(p1)
+            seg_dx = p2[0] - p1[0]
+            seg_dy = p2[1] - p1[1]
+            seg_len = np.hypot(seg_dx, seg_dy)
+            if seg_len > 0.1:
+                # insert midpoints proportional to segment length (more in longer/curvier parts)
+                steps = int(max(1, min(4, seg_len / 2.0)))
+                for s in range(1, steps):
+                    t = s / steps
+                    dense_points.append((p1[0] + seg_dx * t, p1[1] + seg_dy * t))
+        dense_points.append(self.center_line_points[-1])
+
+        # Smooth with small moving average window
+        smoothed_points = []
+        window = 3
+        for i in range(len(dense_points)):
+            start = max(0, i - 1)
+            end = min(len(dense_points), i + window)
+            xs = [dense_points[j][0] for j in range(start, end)]
+            ys = [dense_points[j][1] for j in range(start, end)]
+            smoothed_points.append((np.mean(xs), np.mean(ys)))
+
+        # Dynamic lookahead based on speed and curvature proxy
+        curvature_proxy = 0.0
+        if len(smoothed_points) >= 3:
+            p1 = smoothed_points[0]
+            p2 = smoothed_points[len(smoothed_points) // 2]
+            p3 = smoothed_points[-1]
+            area = abs((p2[0]-p1[0])*(p3[1]-p1[1]) - (p3[0]-p1[0])*(p2[1]-p1[1]))
+            base = np.hypot(p3[0]-p1[0], p3[1]-p1[1]) + 1e-3
+            curvature_proxy = area / (base**3)
+
+        lookahead = np.clip(current_speed * 0.5, 5.0, 22.0)
+        if curvature_proxy > 0.002:
+            lookahead = max(4.0, lookahead * 0.30)
+        elif curvature_proxy > 0.001:
+            lookahead = max(5.0, lookahead * 0.5)
+
+        # Track curvature proxy for assist stickiness
+        self._steering_curvature_proxy = curvature_proxy
+
+        # Select target point along arc length starting from the nearest forward point
+        forward_dists = []
+        for point in smoothed_points:
+            dxp = point[0] - car_x
+            dyp = point[1] - car_y
+            forward_dists.append(dxp * forward_x + dyp * forward_y)
+
+        forward_indices = [i for i, fd in enumerate(forward_dists) if fd > 0.1]
+        if forward_indices:
+            start_idx = min(forward_indices, key=lambda i: forward_dists[i])
+            target_point = smoothed_points[start_idx]
+            remaining = lookahead
+            for j in range(start_idx, len(smoothed_points) - 1):
+                p_curr = smoothed_points[j]
+                p_next = smoothed_points[j + 1]
+                seg_dx = p_next[0] - p_curr[0]
+                seg_dy = p_next[1] - p_curr[1]
+                seg_len = np.hypot(seg_dx, seg_dy)
+                if seg_len < 1e-3:
+                    continue
+                if remaining <= seg_len:
+                    ratio = remaining / seg_len
+                    target_point = (
+                        p_curr[0] + seg_dx * ratio,
+                        p_curr[1] + seg_dy * ratio,
+                    )
+                    break
+                remaining -= seg_len
+            else:
+                target_point = smoothed_points[-1]
         else:
-            norm_dists = np.ones_like(forward_distances) * 0.5
-        
-        # Apply survival function weighting (BFMC weights by SLICE INDEX not distance)
-        # Balanced weighting for 14m image height
-        mu = 0.3  # Slight focus on near-mid range
-        sigma = 0.35  # Moderate transition
-        
-        cdf = scipy_norm.cdf(norm_dists, mu, sigma)
-        sf = 1 - cdf  # Survival function
-        sf_normalized = (sf - sf.min()) / (sf.max() - sf.min() + 1e-6)
-        weights = sf_normalized + 0.1  # Add small constant to avoid zero weights
-        
-        # Calculate weighted average error (lateral)
-        weighted_error = np.average(lateral_errors, weights=weights)
-        
-        # HEADING ERROR CORRECTION: Calculate path tangent to fix post-curve oscillation
-        # This helps the car align its heading with the path, not just position
-        heading_error = 0.0
-        heading_error_contribution = 0.0
-        if len(self.center_line_points) >= 3:
-            # Use points at 1/3 distance for tangent calculation (stable lookahead)
-            tangent_idx = min(len(forward_distances) // 3, len(self.center_line_points) - 2)
-            if tangent_idx >= 1:
-                # Get world coordinates of tangent points
-                p1 = self.center_line_points[tangent_idx - 1]
-                p2 = self.center_line_points[tangent_idx + 1]
-                
-                # Path tangent direction in world frame
-                path_dx = p2[0] - p1[0]
-                path_dy = p2[1] - p1[1]
-                path_heading = np.arctan2(path_dy, path_dx)
-                
-                # Car heading in world frame
-                car_heading = car_theta
-                
-                # Heading error (normalized to [-pi, pi])
-                heading_error = path_heading - car_heading
-                while heading_error > np.pi:
-                    heading_error -= 2 * np.pi
-                while heading_error < -np.pi:
-                    heading_error += 2 * np.pi
-                
-                # Convert heading error to lateral error equivalent
-                # Small heading errors become position errors further ahead
-                heading_error_contribution = heading_error * self.image_height_equivalent * self.heading_correction_weight
-                
-                # Heading debug prints removed
-        
-        # Combine lateral error with heading correction
-        combined_error = weighted_error + heading_error_contribution
-        
-        # BFMC Professional steering formula: angle = 90 - atan2(image_height, error)
-        # CRITICAL: BFMC uses IMAGE HEIGHT (~720 pixels) not variable lookahead
-        # We use meters equivalent of typical image height viewing distance
-        avg_forward_dist = np.average(forward_distances, weights=weights)
-        
-        # Use combined error (lateral + heading correction)
-        raw_steering_degrees = 90.0 - np.degrees(np.arctan2(self.image_height_equivalent, combined_error))
-        raw_steering = np.radians(raw_steering_degrees)
-        
-        # Steering debug outputs removed
-        
-        # Store target point for visualization (use FIXED LOOKAHEAD, not closest!)
-        if len(self.center_line_points) > 0:
-            # Use a fixed lookahead distance to avoid oscillation
-            # Find the point closest to the lookahead distance (e.g., 5-6 meters ahead)
-            target_lookahead = 6.0  # meters - stable lookahead distance
-            
-            best_point = self.center_line_points[0]
-            best_diff = float('inf')
-            
-            for point in self.center_line_points:
-                dx = point[0] - car_x
-                dy = point[1] - car_y
-                forward_dist = dx * forward_x + dy * forward_y
-                
-                # Only consider points ahead
-                if forward_dist > 0.1:
-                    # Find point closest to target lookahead distance
-                    diff = abs(forward_dist - target_lookahead)
-                    if diff < best_diff:
-                        best_diff = diff
-                        best_point = point
-            
-            self.target_point = best_point
-            self.target_direction = np.arctan2(
-                self.target_point[1] - car_y,
-                self.target_point[0] - car_x
-            )
-        
-        # SIMPLIFIED FILTERING (BFMC approach - no excessive filtering)
-        # Stage 1: Clip raw steering to valid range
-        steering_angle = np.clip(
-            raw_steering,
-            -self.car.max_steering_angle,
-            self.car.max_steering_angle
+            target_point = smoothed_points[-1]
+
+        dx = target_point[0] - car_x
+        dy = target_point[1] - car_y
+        lateral_error = dx * perp_x + dy * perp_y
+        heading_to_target = np.arctan2(dy, dx) - car_theta
+        while heading_to_target > np.pi:
+            heading_to_target -= 2 * np.pi
+        while heading_to_target < -np.pi:
+            heading_to_target += 2 * np.pi
+
+        self.target_point = target_point
+        self.target_direction = np.arctan2(
+            self.target_point[1] - car_y,
+            self.target_point[0] - car_x
         )
-        
-        # Stage 2: ROLLING MEDIAN (BFMC uses MEDIAN not average for robustness)
+
+        combined_error = lateral_error + heading_to_target * self.image_height_equivalent * self.heading_correction_weight
+        self.last_heading_error = heading_to_target
+        self.last_lateral_error = combined_error
+
+        raw_steering_degrees = 90.0 - np.degrees(np.arctan2(self.image_height_equivalent, combined_error))
+        steering_angle = np.clip(
+            np.radians(raw_steering_degrees),
+            -self.car.max_steering_angle,
+            self.car.max_steering_angle,
+        )
+
         self.steering_history.insert(0, steering_angle)
         if len(self.steering_history) > self.rolling_median_window:
             self.steering_history.pop()
-        
-        final_steering = np.median(self.steering_history)
-        
-        # Final steering debug prints removed
-        
-        self.last_steering = final_steering  # Store for fallback (BFMC approach)
-        return final_steering
-    
+        steering_smoothed = np.median(self.steering_history)
+
+        # Low-pass blend with previous steering for extra smoothness
+        steering_filtered = (
+            self.steering_lpf_alpha * steering_smoothed
+            + (1.0 - self.steering_lpf_alpha) * self.last_steering
+        )
+
+        self.last_steering = steering_filtered
+        return steering_filtered
+
+    # =======================================================================
+    # INTERNAL METHODS - SPEED
+    # =======================================================================
+    def _calculate_speed_control(self, lane_left, lane_right):
+        """Predict curvature ahead and set safe speed. Returns dict with action/brake/throttle."""
+        curve_radius = self._predict_curve_radius_from_lane(lane_left, lane_right)
+        if curve_radius is None or not np.isfinite(curve_radius):
+            return self._conservative_speed_command_from_cache()
+
+        self.radius_history.append(curve_radius)
+        if len(self.radius_history) > self.radius_history_size:
+            self.radius_history.pop(0)
+        radius_smoothed = np.mean(self.radius_history)
+        self.current_curve_radius = radius_smoothed
+
+        if not np.isfinite(radius_smoothed) or radius_smoothed <= 0:
+            return self._conservative_speed_command_from_cache()
+
+        safe_speed = np.sqrt(self.lateral_accel_limit * max(radius_smoothed, 1e-3))
+        if not np.isfinite(safe_speed) or safe_speed <= 0:
+            return self._conservative_speed_command_from_cache()
+        safe_speed = min(safe_speed, self.car.max_velocity)
+
+        if radius_smoothed < self.curve_entry_threshold:
+            if not self.in_curve:
+                self.in_curve = True
+                self.curve_min_safe_speed = safe_speed
+            else:
+                self.curve_min_safe_speed = min(self.curve_min_safe_speed, safe_speed)
+            safe_speed = self.curve_min_safe_speed
+        else:
+            self.in_curve = False
+            self.curve_min_safe_speed = float('inf')
+
+        self.safe_speed = safe_speed
+        self._last_safe_speed = safe_speed
+        self._last_curve_radius = radius_smoothed
+
+        current_speed = abs(self.car.velocity)
+
+        if radius_smoothed < self.curve_entry_threshold and current_speed > safe_speed * self.brake_threshold:
+            speed_error = current_speed - safe_speed * self.comfort_margin
+            brake_cmd = np.clip(speed_error / (safe_speed + 1e-3), 0.0, 1.0)
+            brake_cmd = min(brake_cmd, 1.0)
+            return {
+                'action': 'brake',
+                'brake': brake_cmd,
+                'throttle': 0.0,
+                'curve_radius': radius_smoothed,
+                'safe_speed': safe_speed
+            }
+        elif current_speed < safe_speed * self.comfort_margin * self.accel_threshold:
+            throttle_cmd = np.clip((safe_speed - current_speed) / safe_speed, 0.0, 1.0)
+            return {
+                'action': 'accelerate',
+                'throttle': throttle_cmd,
+                'brake': 0.0,
+                'curve_radius': radius_smoothed,
+                'safe_speed': safe_speed
+            }
+
+        return {
+            'action': 'hold',
+            'throttle': 0.0,
+            'brake': 0.0,
+            'curve_radius': radius_smoothed,
+            'safe_speed': safe_speed
+        }
+
+    def _conservative_speed_command_from_cache(self):
+        """Fallback speed command when lane samples are sparse; prefer slowing/coasting."""
+        if self._last_safe_speed is None:
+            return None
+        safe_speed = self._last_safe_speed
+        current_speed = abs(self.car.velocity)
+        curve_radius = self._last_curve_radius if self._last_curve_radius is not None else float('inf')
+
+        if current_speed > safe_speed * self.brake_threshold:
+            speed_error = current_speed - safe_speed * self.comfort_margin
+            brake_cmd = np.clip(speed_error / (safe_speed + 1e-3), 0.0, 1.0)
+            return {
+                'action': 'brake',
+                'brake': brake_cmd,
+                'throttle': 0.0,
+                'curve_radius': curve_radius,
+                'safe_speed': safe_speed
+            }
+
+        return {
+            'action': 'hold',
+            'throttle': 0.0,
+            'brake': 0.0,
+            'curve_radius': curve_radius,
+            'safe_speed': safe_speed
+        }
+
+    def _estimate_lane_offset(self):
+        """Estimate signed lateral offset using the nearest forward center point."""
+        if len(self.center_line_points) == 0:
+            return 0.0
+
+        car_x = self.car.x
+        car_y = self.car.y
+        car_theta = self.car.theta
+
+        best = None
+        best_dist = float('inf')
+        for cx, cy in self.center_line_points:
+            dx = cx - car_x
+            dy = cy - car_y
+            forward = dx * np.cos(car_theta) + dy * np.sin(car_theta)
+            if forward < 0.0:
+                continue
+            if forward < best_dist:
+                best_dist = forward
+                best = (dx, dy)
+
+        if best is None:
+            dx = self.center_line_points[0][0] - car_x
+            dy = self.center_line_points[0][1] - car_y
+        else:
+            dx, dy = best
+
+        local_y = dx * (-np.sin(car_theta)) + dy * np.cos(car_theta)
+        return local_y
+
+    # =======================================================================
+    # INTERNAL METHODS - WARNINGS
+    # =======================================================================
+    def _update_warnings(self, steering_command, speed_command, lane_offset=None, speed_only=False):
+        """Update warning flags based on current state"""
+        if lane_offset is None:
+            lane_offset = self._estimate_lane_offset()
+
+        heading_error = getattr(self, 'last_heading_error', 0.0)
+        heading_diverging = (
+            abs(lane_offset) > self.heading_divergence_offset_gate
+            and abs(heading_error) > self.heading_divergence_heading_gate
+            and (lane_offset * heading_error) > self.heading_divergence_threshold
+        )
+
+        speed_too_high = False
+        time_to_crossing = False
+
+        safe_speed = None
+        if speed_command and speed_command.get('safe_speed'):
+            safe_speed = speed_command['safe_speed']
+        elif self.safe_speed:
+            safe_speed = self.safe_speed
+
+        if safe_speed:
+            current_speed = abs(self.car.velocity)
+            if safe_speed > 0 and current_speed > safe_speed * self.warning_thresholds['speed_margin_warn']:
+                speed_too_high = True
+
+        lane_departure = False
+        if not speed_only:
+            # Time to lane crossing (approx)
+            lateral_speed = 0.0  # No direct lateral speed; approximate with steering-induced lateral rate
+            if abs(self.car.velocity) > 0.1 and steering_command is not None:
+                lateral_speed = abs(self.car.velocity) * np.tan(steering_command)
+                if lateral_speed > 0.01:
+                    time_to_crossing_est = abs(lane_offset) / lateral_speed
+                    if time_to_crossing_est < self.warning_thresholds['time_to_crossing_warn']:
+                        time_to_crossing = True
+            lane_departure = (
+                abs(lane_offset) > self.warning_thresholds['lateral_offset_warn']
+                or heading_diverging
+                or time_to_crossing
+            )
+
+        self.warnings['lane_departure'] = lane_departure
+        self.warnings['speed_too_high'] = speed_too_high
+        self.warnings['time_to_crossing'] = time_to_crossing
+
+        # Intervention strength for HUD (0-1)
+        if self.mode == self.MODE_ASSIST:
+            self.intervention_strength = 1.0 if self.intervening else 0.0
+        else:
+            self.intervention_strength = 0.0
+
+    def _update_intervention_state(self, lane_offset, speed_command):
+        """Determine whether assist should take over and when to release."""
+        if self.mode != self.MODE_ASSIST:
+            self.intervening = False
+            return
+
+        safe_speed = None
+        if speed_command and speed_command.get('safe_speed'):
+            safe_speed = speed_command['safe_speed']
+        elif self.safe_speed:
+            safe_speed = self.safe_speed
+
+        current_speed = abs(self.car.velocity)
+        overspeed = False
+        if safe_speed is not None and safe_speed > 0:
+            overspeed = current_speed > safe_speed * self.speed_overshoot_margin
+
+        heading_error = getattr(self, 'last_heading_error', 0.0)
+
+        # Prefer heading to the next follow point (target point) for engagement logic
+        heading_to_target = heading_error
+        if self.target_direction is not None:
+            car_heading = self.car.theta
+            heading_to_target = self.target_direction - car_heading
+            while heading_to_target > np.pi:
+                heading_to_target -= 2 * np.pi
+            while heading_to_target < -np.pi:
+                heading_to_target += 2 * np.pi
+
+        heading_diverging = (
+            abs(lane_offset) > self.heading_divergence_offset_gate
+            and abs(heading_to_target) > self.heading_divergence_heading_gate
+            and (lane_offset * heading_to_target) > self.heading_divergence_threshold
+        )
+
+        brake_requested = speed_command and speed_command.get('action') == 'brake'
+
+        sticky_curve = getattr(self, "_steering_curvature_proxy", 0.0) > self.curvature_sticky_threshold
+
+        hazard = (
+            abs(lane_offset) > self.lane_offset_intervention
+            or abs(heading_to_target) > self.heading_target_window_enter
+            or heading_diverging
+            or overspeed
+            or brake_requested
+            or self.warnings.get('lane_departure')
+        )
+
+        if hazard:
+            self._hazard_counter += 1
+            if sticky_curve:
+                self._curve_hold_counter = max(self._curve_hold_counter, self.curve_hold_frames)
+            if self._hazard_counter >= self.hazard_stable_frames:
+                self.intervening = True
+                self.intervention_strength = 1.0
+                if sticky_curve:
+                    self._curve_hold_counter = max(self._curve_hold_counter, self.curve_hold_frames)
+            self._stable_release_counter = 0
+            return
+        else:
+            self._hazard_counter = 0
+
+        if sticky_curve and self.intervening:
+            self._curve_hold_counter = max(self._curve_hold_counter, self.curve_hold_frames)
+        elif self._curve_hold_counter > 0:
+            self._curve_hold_counter -= 1
+
+        if self.intervening:
+            speed_ok = True
+            if safe_speed is not None and safe_speed > 0:
+                speed_ok = current_speed < safe_speed * self.intervention_release_speed_margin
+
+            heading_aligned = abs(heading_to_target) < self.heading_target_window_release
+            centered = abs(lane_offset) < self.no_intervention_zone
+
+            lane_confident = len(self.center_line_points) >= self.min_points_for_direction
+
+            release_ready = centered and heading_aligned and speed_ok and lane_confident and not overspeed and self._curve_hold_counter == 0
+
+            if release_ready:
+                self._stable_release_counter += 1
+            else:
+                self._stable_release_counter = 0
+
+            if self._stable_release_counter >= self.release_stable_frames:
+                self.intervening = False
+                self.intervention_strength = 0.0
+                self._stable_release_counter = 0
+
+    def _select_active_lane(self, current_lane, left_lane, center_lane, right_lane):
+        """Choose which lane to operate in, falling back to last known and available edges."""
+        if current_lane in ("LEFT", "RIGHT"):
+            return current_lane
+        if self.last_known_lane in ("LEFT", "RIGHT"):
+            return self.last_known_lane
+        if len(left_lane) > 0 and len(center_lane) > 0:
+            return "LEFT"
+        if len(center_lane) > 0 and len(right_lane) > 0:
+            return "RIGHT"
+        return None
+
+    def _predict_curve_radius_from_lane(self, lane_left, lane_right):
+        """Estimate upcoming curve radius directly from lane geometry."""
+        n = min(len(lane_left), len(lane_right))
+        if n < 5:
+            return float('inf')
+
+        center_points = [
+            ((lane_left[i][0] + lane_right[i][0]) / 2.0,
+             (lane_left[i][1] + lane_right[i][1]) / 2.0)
+            for i in range(n)
+        ]
+        if len(center_points) < 5:
+            return float('inf')
+
+        points_x = np.array([p[0] for p in center_points])
+        points_y = np.array([p[1] for p in center_points])
+
+        dx_span = points_x[-1] - points_x[0]
+        dy_span = points_y[-1] - points_y[0]
+
+        try:
+            if abs(dx_span) > abs(dy_span):
+                coeffs = np.polyfit(points_x, points_y, 2)
+                a, b, c = coeffs
+                mid_x = np.mean(points_x)
+                dydx = 2 * a * mid_x + b
+                d2ydx2 = 2 * a
+                curvature = abs(d2ydx2) / ((1 + dydx ** 2) ** 1.5)
+            else:
+                coeffs = np.polyfit(points_y, points_x, 2)
+                a, b, c = coeffs
+                mid_y = np.mean(points_y)
+                dxdy = 2 * a * mid_y + b
+                d2xdy2 = 2 * a
+                curvature = abs(d2xdy2) / ((1 + dxdy ** 2) ** 1.5)
+
+            if curvature > 1e-6:
+                return 1.0 / curvature
+            return float('inf')
+        except Exception:
+            if len(center_points) < 3:
+                return float('inf')
+            idx1 = max(1, len(center_points) // 4)
+            idx2 = max(2, len(center_points) // 2)
+            idx3 = max(3, (3 * len(center_points)) // 4)
+            idx3 = min(idx3, len(center_points) - 1)
+            idx2 = min(idx2, idx3 - 1)
+            idx1 = min(idx1, idx2 - 1)
+            return self._circle_radius_from_3_points(
+                center_points[idx1], center_points[idx2], center_points[idx3]
+            )
+
+    def _circle_radius_from_3_points(self, p1, p2, p3):
+        """Radius of circle passing through three points (fallback for curvature)."""
+        x1, y1 = p1
+        x2, y2 = p2
+        x3, y3 = p3
+
+        a = x1 - x2
+        b = y1 - y2
+        c = x1 - x3
+        d = y1 - y3
+
+        e = a * (x1 + x2) + b * (y1 + y2)
+        f = c * (x1 + x3) + d * (y1 + y3)
+        g = 2 * (a * (y3 - y2) - b * (x3 - x2))
+
+        if abs(g) < 1e-6:
+            return float('inf')
+
+        cx = (d * e - b * f) / g
+        cy = (a * f - c * e) / g
+
+        radius = np.sqrt((x1 - cx) ** 2 + (y1 - cy) ** 2)
+        return max(radius, 1.0)
+
     def _create_virtual_center(self, lane_boundary, car_x, car_y, car_theta, offset_right, current_speed):
-        """Create virtual center line using BFMC's predictive approach
-        Instead of offsetting each point perpendicular, fit polynomial and sample from it
-        This creates a PREDICTIVE path that enters curves earlier
-        Adaptive lookahead based on curvature and speed
-        """
+        """Controller2 virtual center with predictive polynomial offset."""
         if len(lane_boundary) < 3:
-            return []  # Need at least 3 points to fit
-        
-        # Extract x,y coordinates
+            return []
+
         points_x = np.array([p[0] for p in lane_boundary])
         points_y = np.array([p[1] for p in lane_boundary])
-        
-        # Fit 2nd order polynomial to the boundary
+
         try:
-            coeffs = np.polyfit(points_x, points_y, 2)
-            a, b, c = coeffs
-        except:
-            # Fallback: simple offset if fit fails
-            return [(p[0] + self.base_lane_offset * (-1 if offset_right else 1), p[1]) 
-                    for p in lane_boundary]
-        
-        # Detect sharp turn and adapt offset (BFMC technique)
+            a, b, c = np.polyfit(points_x, points_y, 2)
+        except Exception:
+            return [(p[0] + self.base_lane_offset * (-1 if offset_right else 1), p[1]) for p in lane_boundary]
+
         curvature = abs(a)
         offset_dist = self.base_lane_offset
-        
         if curvature > self.sharp_turn_threshold:
             offset_dist = self.base_lane_offset * self.sharp_turn_multiplier
-            if self.debug:
-                print(f"[LKA DEBUG] Sharp turn in boundary! Curvature: {curvature:.6f}, widened offset: {offset_dist:.2f}m")
-        
-        # ADAPTIVE PREDICTIVE LOOKAHEAD (same logic as both-boundaries case)
+
         base_lookahead = 2
-        if curvature > 0.0002:  # Very sharp curve
+        if curvature > 0.0002:
             lookahead_points = 0
-        elif curvature > 0.0001:  # Sharp curve
+        elif curvature > 0.0001:
             lookahead_points = 1
         else:
             lookahead_points = base_lookahead
-            if current_speed > 15.0:  # High speed
+            if current_speed > 15.0:
                 lookahead_points = 3
-        
-        # Create virtual center by sampling from polynomial with offset
+
         virtual_center = []
         for i, x_val in enumerate(points_x):
             if lookahead_points > 0:
-                # Use lookahead x-coordinate for polynomial evaluation
                 lookahead_idx = min(i + lookahead_points, len(points_x) - 1)
                 x_lookahead = points_x[lookahead_idx]
-                
-                # Calculate y from polynomial at lookahead position
                 y_poly = a * x_lookahead**2 + b * x_lookahead + c
-                
-                # Tangent at lookahead position
                 tangent_slope = 2 * a * x_lookahead + b
                 tangent_angle = np.arctan(tangent_slope)
             else:
-                # No lookahead - use current position
                 x_lookahead = x_val
                 y_poly = a * x_val**2 + b * x_val + c
                 tangent_slope = 2 * a * x_val + b
                 tangent_angle = np.arctan(tangent_slope)
-            
-            # Perpendicular offset
-            offset_angle = tangent_angle + (np.pi/2 if offset_right else -np.pi/2)
-            
-            # Apply offset
+
+            offset_angle = tangent_angle + (np.pi / 2 if offset_right else -np.pi / 2)
             vx = x_val + offset_dist * np.cos(offset_angle)
             if lookahead_points > 0:
                 vy = y_poly - (x_lookahead - x_val) * np.tan(tangent_angle) + offset_dist * np.sin(offset_angle)
             else:
                 vy = y_poly + offset_dist * np.sin(offset_angle)
             virtual_center.append((vx, vy))
-        
+
         return virtual_center
-    
-    def _calculate_speed_control(self, lane_left, lane_right, track):
-        """
-        Predict curve ahead and calculate required speed adjustment
-        Uses LANE GEOMETRY to detect curves (not car steering!)
-        """
-        # Predict future trajectory using LANE PATH
-        curve_radius = self._predict_curve_radius_from_lane(lane_left, lane_right)
-        
-        # Store for visualization
-        self.current_curve_radius = curve_radius
-        
-        # Calculate maximum safe speed for this curve
-        # Formula: v_max = sqrt(a_lat_max * R)
-        if curve_radius < self.curve_entry_threshold:  # We're in a curve
-            max_safe_speed = np.sqrt(self.lateral_accel_limit * curve_radius)
-            
-            # Track if we just entered a curve
-            if not self.in_curve:
-                self.in_curve = True
-                self.curve_min_safe_speed = max_safe_speed
-                print(f"\033[91m{'='*80}\033[0m")
-                print(f"\033[91m🔴 ENTERING CURVE! Radius: {curve_radius:.1f}m | Safe Speed: {max_safe_speed*3.6:.1f} km/h\033[0m")
-                print(f"\033[91m{'='*80}\033[0m")
-            else:
-                # Already in curve - track minimum safe speed
-                if max_safe_speed < self.curve_min_safe_speed:
-                    self.curve_min_safe_speed = max_safe_speed
-                    print(f"\033[93m⚠️ TIGHTER CURVE! New min speed: {max_safe_speed*3.6:.1f} km/h (radius: {curve_radius:.1f}m)\033[0m")
-                
-                # Use the minimum safe speed encountered in this curve
-                max_safe_speed = self.curve_min_safe_speed
-        else:
-            # Exiting curve or on straight
-            if self.in_curve:
-                print(f"\033[92m✓ EXITING CURVE - Back to straight\033[0m")
-                self.in_curve = False
-                self.curve_min_safe_speed = float('inf')
-            
-            max_safe_speed = self.car.max_velocity  # No speed limit for straight
-        
-        self.safe_speed = max_safe_speed
-        
-        current_speed = abs(self.car.velocity)
-        target_speed = max_safe_speed * self.comfort_margin
-        
-        # DEBUG - Show speed calculations
-        print(f"[SPEED] InCurve: {self.in_curve}, Radius: {curve_radius:.1f}m, Current: {current_speed*3.6:.1f} km/h, Safe: {max_safe_speed*3.6:.1f} km/h, Target: {target_speed*3.6:.1f} km/h")
-        
-        # CRITICAL: Brake if significantly above target, but add hysteresis to avoid constant braking
-        # Brake threshold: 105% of target (allows small overshoot before braking)
-        brake_threshold = target_speed * 1.05
-        
-        if current_speed > brake_threshold:
-            # Speed is too high - MUST brake NOW
-            prediction_distance = current_speed * (self.prediction_horizon * self.prediction_dt)
-            
-            if prediction_distance > 0.1:
-                # Required deceleration: v^2 = v0^2 + 2ad
-                required_decel = (current_speed**2 - target_speed**2) / (2 * prediction_distance)
-                brake_decel = min(required_decel, self.max_comfort_decel)
-                
-                # Convert to brake pedal (0-1), using full 1.0g braking capability
-                brake_amount = brake_decel / (1.0 * 9.81)
-                
-                # Increase brake force if speed is dangerously high
-                if current_speed > max_safe_speed:
-                    # Already over safe limit - HARD BRAKE!
-                    brake_amount = max(brake_amount, 1.0)  # Full emergency brake
-                
-                brake_amount = np.clip(brake_amount, 0.3, 1.0)  # Allow up to 100% brake
-                
-                return {
-                    'action': 'brake',
-                    'brake': brake_amount,
-                    'target_speed': target_speed,
-                    'curve_radius': curve_radius
-                }
-            else:
-                # Emergency brake if prediction fails
-                return {
-                    'action': 'brake',
-                    'brake': 1.0,  # Full brake in emergency
-                    'target_speed': target_speed,
-                    'curve_radius': curve_radius
-                }
-        
-        elif current_speed < target_speed * self.accel_threshold:
-            # Only accelerate if NOT in a curve
-            if self.in_curve:
-                # In curve - coast, don't accelerate
-                return {
-                    'action': 'maintain',
-                    'target_speed': target_speed,
-                    'curve_radius': curve_radius
-                }
-            
-            # Safe to accelerate - on straight section
-            speed_ratio = current_speed / max_safe_speed if max_safe_speed > 0 else 0
-            
-            if curve_radius > 500:  # Straight or very gentle curve
-                throttle_amount = 1.0  # Full throttle
-            elif curve_radius > 100:
-                throttle_amount = 0.7  # Moderate throttle for gentle curves
-            else:
-                throttle_amount = 0.4  # Gentle throttle for tight curves
-            
-            return {
-                'action': 'accelerate',
-                'throttle': throttle_amount,
-                'target_speed': target_speed,
-                'curve_radius': curve_radius
-            }
-        
-        # Speed is between accel threshold and target - coast (no brake, no throttle)
-        # Let natural drag slow the car slightly without fighting it
-        return {
-            'action': 'maintain',
-            'target_speed': target_speed,
-            'curve_radius': curve_radius
-        }
-    
-    def _predict_curve_radius_from_lane(self, lane_left, lane_right):
-        """
-        Calculate curve radius from the LANE GEOMETRY ahead
-        This detects upcoming curves regardless of current steering
-        
-        Uses curvature formula: κ = |dx*d2y - dy*d2x| / (dx^2 + dy^2)^(3/2)
-        Radius = 1/κ
-        """
-        # Get center line points
-        n = min(len(lane_left), len(lane_right))
-        if n < 5:
-            # print(f"[CURVE DEBUG] Not enough lane points: {n}")
-            return float('inf')  # Not enough points
-        
-        center_points = []
-        for i in range(n):  # Use ALL available points
-            cx = (lane_left[i][0] + lane_right[i][0]) / 2.0
-            cy = (lane_left[i][1] + lane_right[i][1]) / 2.0
-            center_points.append((cx, cy))
-        
-        if len(center_points) < 5:
-            return float('inf')
-        
-        # Check if points form a straight line using R² coefficient
-        # If R² > 0.995, it's essentially a straight line
-        points_x = np.array([p[0] for p in center_points])
-        points_y = np.array([p[1] for p in center_points])
-        
-        # Calculate R² for linear fit
-        if len(points_x) >= 3:
-            # Fit linear regression
-            dx = points_x[-1] - points_x[0]
-            dy = points_y[-1] - points_y[0]
-            
-            if abs(dx) > abs(dy):
-                # Fit y = mx + b
-                coeffs = np.polyfit(points_x, points_y, 1)
-                y_fit = np.polyval(coeffs, points_x)
-                ss_res = np.sum((points_y - y_fit) ** 2)
-                ss_tot = np.sum((points_y - np.mean(points_y)) ** 2)
-            else:
-                # Fit x = my + b
-                coeffs = np.polyfit(points_y, points_x, 1)
-                x_fit = np.polyval(coeffs, points_y)
-                ss_res = np.sum((points_x - x_fit) ** 2)
-                ss_tot = np.sum((points_x - np.mean(points_x)) ** 2)
-            
-            if ss_tot > 1e-10:  # Avoid division by zero
-                r_squared = 1 - (ss_res / ss_tot)
-                
-                # If R² > 0.995, treat as straight line
-                if r_squared > 0.995:
-                    return float('inf')
-        
-        # Calculate curvature using derivative method (more accurate for actual road curves)
-        # Use points in the middle portion of the detected lane (where data is most reliable)
-        start_idx = min(2, len(center_points) - 3)
-        end_idx = max(start_idx + 3, len(center_points) - 1)
-        
-        # Fit a polynomial to the lane center
-        points_x = [p[0] for p in center_points[start_idx:end_idx]]
-        points_y = [p[1] for p in center_points[start_idx:end_idx]]
-        
-        if len(points_x) < 3:
-            return float('inf')
-        
-        # Fit 2nd order polynomial: y = a*x^2 + b*x + c
-        # Or if vertical, fit x = a*y^2 + b*y + c
-        dx = points_x[-1] - points_x[0]
-        dy = points_y[-1] - points_y[0]
-        
-        try:
-            if abs(dx) > abs(dy):
-                # Fit y as function of x
-                coeffs = np.polyfit(points_x, points_y, 2)
-                a, b, c = coeffs
-                
-                # Evaluate at middle point
-                mid_x = np.mean(points_x)
-                # First derivative: dy/dx = 2*a*x + b
-                dydx = 2 * a * mid_x + b
-                # Second derivative: d2y/dx2 = 2*a
-                d2ydx2 = 2 * a
-                
-                # Curvature: κ = |d2y/dx2| / (1 + (dy/dx)^2)^(3/2)
-                curvature = abs(d2ydx2) / ((1 + dydx**2) ** 1.5)
-            else:
-                # Fit x as function of y
-                coeffs = np.polyfit(points_y, points_x, 2)
-                a, b, c = coeffs
-                
-                # Evaluate at middle point
-                mid_y = np.mean(points_y)
-                # First derivative: dx/dy = 2*a*y + b
-                dxdy = 2 * a * mid_y + b
-                # Second derivative: d2x/dy2 = 2*a
-                d2xdy2 = 2 * a
-                
-                # Curvature: κ = |d2x/dy2| / (1 + (dx/dy)^2)^(3/2)
-                curvature = abs(d2xdy2) / ((1 + dxdy**2) ** 1.5)
-            
-            # Radius is inverse of curvature
-            if curvature > 1e-6:
-                radius = 1.0 / curvature
-            else:
-                radius = float('inf')
-                
-        except Exception as e:
-            # Fallback to 3-point circle fit if polynomial fails
-            idx1 = max(1, len(center_points) // 4)
-            idx2 = max(2, len(center_points) // 2)
-            idx3 = max(3, (3 * len(center_points)) // 4)
-            
-            if idx3 >= len(center_points):
-                idx3 = len(center_points) - 1
-            if idx2 >= idx3:
-                idx2 = idx3 - 1
-            if idx1 >= idx2:
-                idx1 = idx2 - 1
-            
-            p1 = center_points[idx1]
-            p2 = center_points[idx2]
-            p3 = center_points[idx3]
-            
-            radius = self._circle_radius_from_3_points(p1, p2, p3)
-        
-        # Update running average
-        self.radius_history.append(radius)
-        if len(self.radius_history) > self.radius_history_size:
-            self.radius_history.pop(0)
-        
-        avg_radius = np.mean(self.radius_history)
-        return avg_radius
-    
-    def _circle_radius_from_3_points(self, p1, p2, p3):
-        """Calculate radius of circle passing through 3 points"""
-        x1, y1 = p1
-        x2, y2 = p2
-        x3, y3 = p3
-        
-        a = x1 - x2
-        b = y1 - y2
-        c = x1 - x3
-        d = y1 - y3
-        
-        e = a * (x1 + x2) + b * (y1 + y2)
-        f = c * (x1 + x3) + d * (y1 + y3)
-        g = 2 * (a * (y3 - y2) - b * (x3 - x2))
-        
-        if abs(g) < 1e-6:
-            return float('inf')  # Collinear points (straight line)
-        
-        cx = (d * e - b * f) / g
-        cy = (a * f - c * e) / g
-        
-        radius = np.sqrt((x1 - cx)**2 + (y1 - cy)**2)
-        
-        return max(radius, 1.0)  # Minimum 1m radius
-    
-    def _apply_blended_control(self, steering_command, speed_command):
-        """
-        Blend AI control with manual input based on intervention strength
-        (Mode 3: Assist)
-        """
-        # Calculate lateral offset from lane center to determine intervention strength
-        lateral_offset = self._calculate_lateral_offset()
-        intervention = self._calculate_intervention_strength(lateral_offset)
-        
-        self.intervention_strength = intervention
-        
-        # Blend steering (manual input comes from car's current state)
-        if steering_command is not None:
-            # For now, full AI steering when assisting
-            # TODO: blend with actual manual input when we track it
-            final_steering = steering_command
-        else:
-            final_steering = None
-        
-        # Blend speed control (always apply full speed commands for proper acceleration/braking)
-        # CRITICAL: Never apply throttle and brake simultaneously!
-        if speed_command:
-            if speed_command['action'] == 'brake':
-                # Apply full brake as calculated, NO throttle
-                final_brake = speed_command['brake']
-                final_throttle = 0.0
-                print(f"[BRAKE ACTION] Brake: {final_brake:.2f}, Throttle: {final_throttle:.2f}")
-            elif speed_command['action'] == 'accelerate':
-                # Apply full throttle as calculated, NO brake
-                final_throttle = speed_command['throttle']
-                final_brake = 0.0
-                print(f"[ACCEL ACTION] Throttle: {final_throttle:.2f}, Brake: {final_brake:.2f}")
-            elif speed_command['action'] == 'maintain':
-                # Maintain mode: coast - no throttle, no brake (let natural drag work)
-                final_throttle = 0.0
-                final_brake = 0.0
-                print(f"[MAINTAIN ACTION] COAST - Brake: {final_brake:.2f}, Throttle: {final_throttle:.2f}")
-            else:
-                final_throttle = 0.0
-                final_brake = 0.0
-        else:
-            final_throttle = 0.0
-            final_brake = 0.0
-        
-        return final_steering, final_throttle, final_brake
-    
-    def _calculate_lateral_offset(self):
-        """Calculate lateral distance from lane center"""
-        if self.target_point is None:
-            return 0.0
-        
-        car_x, car_y = self.car.x, self.car.y
-        target_x, target_y = self.target_point
-        
-        # Distance to target point
-        offset = np.hypot(target_x - car_x, target_y - car_y)
-        
-        return offset
-    
-    def _calculate_intervention_strength(self, lateral_offset):
-        """
-        Calculate intervention strength (0.0 to 1.0) based on lateral offset
-        
-        Zones:
-        - < 0.5m: No intervention (0.0)
-        - 0.5m - 1.5m: Gentle intervention (0.2 - 0.5)
-        - > 1.5m: Strong intervention (0.5 - 1.0)
-        """
-        if lateral_offset < self.no_intervention_zone:
-            return 0.0
-        
-        elif lateral_offset < self.gentle_intervention_zone:
-            # Gentle zone: linear interpolation 0.2 to 0.5
-            normalized = (lateral_offset - self.no_intervention_zone) / \
-                        (self.gentle_intervention_zone - self.no_intervention_zone)
-            return 0.2 + 0.3 * normalized
-        
-        else:
-            # Strong zone: linear interpolation 0.5 to 1.0
-            normalized = min((lateral_offset - self.gentle_intervention_zone) / 1.0, 1.0)
-            return 0.5 + 0.5 * normalized
-    
-    def _update_warnings(self, steering_command, speed_command):
-        """Update warning states for Mode 2 (Warning)"""
-        # Clear warnings
-        self.warnings = {k: False for k in self.warnings}
-        
-        # Lane departure warning
-        lateral_offset = self._calculate_lateral_offset()
-        if lateral_offset > self.warning_thresholds['lateral_offset_warn']:
-            self.warnings['lane_departure'] = True
-        
-        # Speed too high for curve
-        if speed_command and self.safe_speed:
-            current_speed = abs(self.car.velocity)
-            if current_speed > self.safe_speed * self.warning_thresholds['speed_margin_warn']:
-                self.warnings['speed_too_high'] = True
-        
-        # Time to lane crossing
-        # Simple estimate: lateral_offset / lateral_velocity
-        # For now, triggered if offset is high
-        if lateral_offset > 1.2:
-            self.warnings['time_to_crossing'] = True

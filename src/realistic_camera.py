@@ -64,10 +64,10 @@ class RealisticCameraSensor:
         self.min_detection_distance = 1.0  # meters (minimum distance)
         self.optimal_detection_distance = 30.0  # meters (100% confidence)
         self.good_detection_distance = 40.0  # meters (80% confidence)
-        self.max_detection_distance = 60.0  # meters (30% confidence)
-        self.sample_interval = 6.0  # Sample every 4.0 meters along lane (PERFORMANCE: 4x fewer points)
-        self.interpolation_interval = 2.0  # Keep at 2.0m for performance
-        self.detection_max_range = 60.0  # Maximum detection range
+        self.max_detection_distance = 50.0  # meters (30% confidence)
+        self.sample_interval = 4.0  # Sample every 4.0 meters along lane (PERFORMANCE: 4x fewer points)
+        self.interpolation_interval = 6.0  # Interpolation density (PERFORMANCE: reduced computation)
+        self.detection_max_range = 50.0  # Maximum detection range
         self.detection_min_range = 1.0  # Minimum detection range
         self.pixels_per_meter = float(PIXELS_PER_METER)
         self.use_uniform_sampling = True  # Use optimized uniform sampling
@@ -76,7 +76,7 @@ class RealisticCameraSensor:
         self.frame_rate = CAMERA_FRAME_RATE  # Hz
         self.frame_interval = 1.0 / float(self.frame_rate) if self.frame_rate > 0 else 0.0
         self.latency = float(CAMERA_LATENCY_MS) / 1000.0  # Convert ms to seconds
-        self.noise_std = 0  # meters (5cm spatial noise)
+        self.noise_std = float(CAMERA_NOISE_STD)  # meters (5cm spatial noise)
         
         self.last_capture_time = 0.0
         self._buffer = []  # Frame buffer for latency simulation
@@ -91,6 +91,7 @@ class RealisticCameraSensor:
         self.right_lane_position = None
         self.lane_center_offset = 0.0
         self.lane_heading_error = 0.0
+        self.lane_width = 5.0  # meters, matches track lane width
         
         # Lane change hysteresis to prevent oscillation
         self._lane_change_hysteresis = 2.5  # meters (half lane width - must cross to other lane to switch)
@@ -138,35 +139,6 @@ class RealisticCameraSensor:
         cam_z = self.camera_height
         return cam_x, cam_y, cam_z
     
-    def compute_homography(self):
-        """
-        Compute homography matrix from ground plane (Z=0) to image plane.
-        
-        H maps world coordinates (X_w, Y_w, 1) to image coordinates (u, v, 1).
-        H_inv does the reverse: image pixels to world meters.
-        
-        This is the core of Inverse Perspective Mapping (IPM).
-        """
-        # Get camera position
-        cam_x, cam_y, cam_z = self.get_camera_position()
-        
-        # === Build Rotation Matrix ===
-        # Pitch: rotation around X-axis (camera looking down at road)
-        pitch = self.pitch_angle
-        R_pitch = np.array([
-            [1, 0, 0],
-            [0, np.cos(pitch), -np.sin(pitch)],
-            [0, np.sin(pitch), np.cos(pitch)]
-        ])
-        
-        # Yaw: rotation around Z-axis (car heading direction)
-        yaw = self.car.theta
-        R_yaw = np.array([
-            [np.cos(yaw), -np.sin(yaw), 0],
-            [np.sin(yaw), np.cos(yaw), 0],
-            [0, 0, 1]
-        ])
-        
     def compute_homography(self):
         """
         Compute homography matrix from ground plane (Z=0) to image plane.
@@ -333,6 +305,9 @@ class RealisticCameraSensor:
             
             left_pts, center_pts, right_pts = item['data']
             
+            # Ensure boundaries are ordered correctly relative to car
+            left_pts, center_pts, right_pts = self._enforce_boundary_order(left_pts, center_pts, right_pts)
+
             # Determine current lane based on distance to lane boundaries
             cam_x, cam_y, _ = self.get_camera_position()
             
@@ -410,6 +385,17 @@ class RealisticCameraSensor:
             return left_pts, center_pts, right_pts
         
         return self.last_measurement
+
+    def _enforce_boundary_order(self, left_pts, center_pts, right_pts):
+        """Swap left/right if detections appear reversed in car frame."""
+        left_offset = self._closest_boundary_offset(left_pts)
+        right_offset = self._closest_boundary_offset(right_pts)
+
+        # If both present and left is not actually left of right, swap
+        if left_offset is not None and right_offset is not None:
+            if left_offset <= right_offset:
+                return right_pts, center_pts, left_pts
+        return left_pts, center_pts, right_pts
     
     def _perform_detection_realistic(self, track):
         """
@@ -644,24 +630,61 @@ class RealisticCameraSensor:
         return lateral_offset_px / self.pixels_per_meter
     
     def _calculate_lane_tracking_errors(self, left_points, right_points):
-        """Calculate lateral offset and heading error from lane center"""
-        if not left_points or not right_points:
+        """Calculate lateral offset and heading error from lane center using car-frame distances."""
+        left_offset = self._closest_boundary_offset(left_points)
+        right_offset = self._closest_boundary_offset(right_points)
+
+        # If we have no usable offsets, bail early
+        if left_offset is None and right_offset is None:
             return
-        
-        # Find closest points (smallest angle) - handle 4-tuple format
-        left_closest = min(left_points, key=lambda p: abs(p[2]))
-        right_closest = min(right_points, key=lambda p: abs(p[2]))
-        
-        left_angle = left_closest[2]
-        right_angle = right_closest[2]
-        
-        # Lane center is midpoint between left and right
-        self.lane_center_offset = (right_angle + left_angle) / 2
+
+        # Use whichever offsets we have; prefer averaging when both are present
+        if left_offset is not None and right_offset is not None:
+            lane_width = left_offset - right_offset
+            if lane_width <= 0 or lane_width > 7.0:
+                lane_width = self.lane_width
+            self.lane_center_offset = right_offset + lane_width / 2.0
+        elif left_offset is not None:
+            # Assume lane width to approximate center from single edge
+            self.lane_center_offset = left_offset - (self.lane_width / 2.0 if hasattr(self, "lane_width") else 2.5)
+        else:
+            self.lane_center_offset = right_offset + (self.lane_width / 2.0 if hasattr(self, "lane_width") else 2.5)
+
+        # Treat heading error as lateral offset proxy (better than angle-to-point)
         self.lane_heading_error = self.lane_center_offset
-        
-        # Store lane positions
-        self.left_lane_position = left_angle
-        self.right_lane_position = right_angle
+
+        # Store lane positions for HUD/debug
+        self.left_lane_position = left_offset
+        self.right_lane_position = right_offset
+
+    def _closest_boundary_offset(self, boundary_points):
+        """Return lateral offset (m) of closest boundary point in car frame."""
+        if not boundary_points:
+            return None
+
+        cos_t = np.cos(self.car.theta)
+        sin_t = np.sin(self.car.theta)
+        best = None
+
+        for pt in boundary_points:
+            px, py = pt[0], pt[1]
+            dx = px - self.car.x
+            dy = py - self.car.y
+
+            # Car-centric frame: x forward, y left
+            x_local = dx * cos_t + dy * sin_t
+            y_local = -dx * sin_t + dy * cos_t
+
+            # Prefer points ahead but still allow near-by
+            ahead_penalty = 0.5 if x_local < -0.5 else 0.0
+            cost = abs(y_local) + ahead_penalty
+
+            if best is None or cost < best[0]:
+                best = (cost, y_local)
+
+        if best is None:
+            return None
+        return best[1]
     
     def get_field_of_view(self):
         """Return horizontal FOV for visualization"""

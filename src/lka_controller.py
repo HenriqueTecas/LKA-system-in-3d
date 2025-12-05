@@ -28,11 +28,20 @@ class PurePursuitLKA:
         # Smoothing for lookahead point to reduce jitter from noisy detections
         self.smoothing_alpha = float(LKA_LOOKAHEAD_SMOOTHING_ALPHA)
         self._smoothed_lookahead = None  # (x, y, dist) in meters
+        # Keep-lane reference and violation flag
+        self.desired_lane = None  # "LEFT" or "RIGHT" remembered at activation
+        self.lane_violation = False
 
     def toggle(self):
         """Toggle LKA on/off"""
         self.active = not self.active
         self.was_manually_overridden = False
+        # Lock in the current lane as the reference when enabling
+        if self.active and self.camera.current_lane != "UNKNOWN":
+            self.desired_lane = self.camera.current_lane
+        else:
+            self.desired_lane = None
+        self.lane_violation = False
         return self.active
 
     def deactivate(self):
@@ -40,6 +49,7 @@ class PurePursuitLKA:
         if self.active:
             self.active = False
             self.was_manually_overridden = True
+        self.lane_violation = False
 
     def calculate_steering(self, track):
         """Pure Pursuit algorithm with enhanced lane center point generation"""
@@ -48,16 +58,27 @@ class PurePursuitLKA:
             return None
 
         # Use camera's last measurement (already detected in main loop)
-        left_lane, right_lane, center_lane = self.camera.last_measurement
+        left_lane, center_lane, right_lane = self.camera.last_measurement
 
-        # Determine which lane we're in and which boundaries to use
+        # Update desired lane if it was unknown at activation but we now have a detection
         current_lane = self.camera.current_lane
+        if self.desired_lane is None and current_lane != "UNKNOWN":
+            self.desired_lane = current_lane
 
-        if current_lane == "LEFT":
+        # Use the remembered reference lane for control to enforce keep-lane behavior
+        target_lane = self.desired_lane if self.desired_lane is not None else current_lane
+
+        # Flag violation if camera thinks we drifted to the other lane
+        self.lane_violation = (
+            self.desired_lane is not None
+            and current_lane not in ("UNKNOWN", self.desired_lane)
+        )
+
+        if target_lane == "LEFT":
             # In left lane: use left outer boundary and center line
             lane_left_boundary = left_lane
             lane_right_boundary = center_lane
-        elif current_lane == "RIGHT":
+        elif target_lane == "RIGHT":
             # In right lane: use center line and right outer boundary
             lane_left_boundary = center_lane
             lane_right_boundary = right_lane
@@ -187,6 +208,4 @@ class PurePursuitLKA:
             lane_center_points.append((center_x, center_y, distance))
         
         return lane_center_points
-
-
 

@@ -9,16 +9,18 @@ from OpenGL.GL import *
 from OpenGL.GLU import *
 import numpy as np
 from .config import (
-    PIXELS_PER_METER, VEHICLE_MASS, VEHICLE_BODY_MASS, WHEEL_MASS,
-    VEHICLE_INERTIA_Z, VEHICLE_WHEELBASE, VEHICLE_TRACK_WIDTH,
-    VEHICLE_CG_TO_FRONT, VEHICLE_CG_TO_REAR, TIRE_CORNERING_STIFFNESS_FRONT,
-    TIRE_CORNERING_STIFFNESS_REAR, WHEEL_RADIUS, WHEEL_INERTIA,
-    TIRE_LONGITUDINAL_STIFFNESS, TIRE_STATIC_FRICTION, TIRE_KINETIC_FRICTION,
+    PIXELS_PER_METER, VEHICLE_MASS, VEHICLE_INERTIA_Z, VEHICLE_WHEELBASE,
+    VEHICLE_CG_TO_FRONT, VEHICLE_CG_TO_REAR, VEHICLE_TRACK_WIDTH,
+    VEHICLE_CG_HEIGHT, TIRE_CORNERING_STIFFNESS_FRONT,
+    TIRE_CORNERING_STIFFNESS_REAR, TIRE_LONGITUDINAL_STIFFNESS,
+    TIRE_STATIC_FRICTION, TIRE_KINETIC_FRICTION, WHEEL_RADIUS,
     AERO_CD, AERO_AREA, AIR_DENSITY, AERO_CL, AERO_DOWNFORCE_AREA,
-    ROLLING_RESISTANCE_COEFF, GRAVITY, WHEEL_POWER_WATTS, MIN_SPEED_FOR_POWER_LIMIT,
-    MAX_DRIVE_FORCE_FROM_TORQUE, MAX_BRAKE_FORCE, ENGINE_HORSEPOWER,
+    SUSP_PITCH_STIFFNESS, SUSP_PITCH_DAMPING, SUSP_ROLL_STIFFNESS,
+    SUSP_ROLL_DAMPING, DIFF_OUTER_BIAS, DIFF_MAX_OUTER,
+    ROLLING_RESISTANCE_COEFF, GRAVITY, MAX_DRIVE_FORCE, MAX_BRAKE_FORCE,
     THROTTLE_TAU, BRAKE_TAU, STEERING_TAU, MAX_STEERING_ANGLE, MAX_STEERING_RATE,
-    MAX_VELOCITY
+    MAX_VELOCITY, INPUT_STEER_RATE, INPUT_STEER_DEADZONE, INPUT_BRAKE_RATE,
+    STABILITY_MAX_LAT_ACCEL_G
 )
 
 class Car:
@@ -52,27 +54,23 @@ class Car:
         # ====================================================================
         # Vehicle Geometry (SI units)
         # ====================================================================
-        self.body_mass = float(VEHICLE_BODY_MASS)  # kg (body only)
-        self.wheel_mass = float(WHEEL_MASS)  # kg (per wheel)
-        self.mass = float(VEHICLE_MASS)  # kg (total: body + 4 wheels)
+        self.mass = float(VEHICLE_MASS)  # kg
         self.inertia_z = float(VEHICLE_INERTIA_Z)  # kg·m²
         self.wheelbase = float(VEHICLE_WHEELBASE)  # m
-        self.track_width = float(VEHICLE_TRACK_WIDTH)  # m
         self.lf = float(VEHICLE_CG_TO_FRONT)  # m (CG to front axle)
         self.lr = float(VEHICLE_CG_TO_REAR)  # m (CG to rear axle)
+        self.track_width = float(VEHICLE_TRACK_WIDTH)
+        self.cg_height = float(VEHICLE_CG_HEIGHT)
         
         # ====================================================================
-        # Tire and Wheel Parameters
+        # Tire Parameters
         # ====================================================================
         self.c_f = float(TIRE_CORNERING_STIFFNESS_FRONT)  # N/rad
         self.c_r = float(TIRE_CORNERING_STIFFNESS_REAR)  # N/rad
-        self.wheel_radius = float(WHEEL_RADIUS)  # m
-        self.wheel_inertia = float(WHEEL_INERTIA)  # kg·m² (per wheel)
-        
-        # Longitudinal tire model
-        self.tire_long_stiffness = float(TIRE_LONGITUDINAL_STIFFNESS)  # N
-        self.tire_mu_static = float(TIRE_STATIC_FRICTION)  # peak friction
-        self.tire_mu_kinetic = float(TIRE_KINETIC_FRICTION)  # sliding friction
+        self.wheel_radius = float(WHEEL_RADIUS)  # meters
+        self.tire_long_stiffness = float(TIRE_LONGITUDINAL_STIFFNESS)
+        self.tire_mu_static = float(TIRE_STATIC_FRICTION)
+        self.tire_mu_kinetic = float(TIRE_KINETIC_FRICTION)
         
         # ====================================================================
         # Forces and Resistances
@@ -90,9 +88,7 @@ class Car:
         self.c_rr = float(ROLLING_RESISTANCE_COEFF)
         
         # Drive/brake limits
-        self.wheel_power = float(WHEEL_POWER_WATTS)  # W (power at wheels after drivetrain loss)
-        self.min_speed_power_limit = float(MIN_SPEED_FOR_POWER_LIMIT)  # m/s
-        self.max_torque_force = float(MAX_DRIVE_FORCE_FROM_TORQUE)  # N
+        self.max_drive_force = float(MAX_DRIVE_FORCE)  # N
         self.max_brake_force = float(MAX_BRAKE_FORCE)  # N
         
         # ====================================================================
@@ -100,13 +96,6 @@ class Car:
         # ====================================================================
         self.velocity = 0.0  # m/s (longitudinal velocity)
         self.steering_angle = 0.0  # radians
-        
-        # Individual wheel angular velocities (rad/s)
-        # Order: [front_left, front_right, rear_left, rear_right]
-        self.wheel_omega = np.array([0.0, 0.0, 0.0, 0.0])
-        
-        # Wheel rotation angles for animation (radians)
-        self.wheel_rotation = 0.0  # legacy (for backwards compatibility)
         
         # ====================================================================
         # Performance Limits
@@ -116,13 +105,6 @@ class Car:
         self.max_steering_rate = float(MAX_STEERING_RATE)  # rad/s
         
         # ====================================================================
-        # Performance Timing (for 0-100 km/h debug)
-        # ====================================================================
-        self.accel_test_active = False
-        self.accel_test_start_time = 0.0
-        self.accel_test_completed = False
-        
-        # ====================================================================
         # Actuator States and Time Constants
         # ====================================================================
         self.throttle_state = 0.0  # [-1, 1]
@@ -130,6 +112,24 @@ class Car:
         self.throttle_tau = float(THROTTLE_TAU)  # seconds
         self.brake_tau = float(BRAKE_TAU)  # seconds
         self.steering_tau = float(STEERING_TAU)  # seconds
+        self._prev_brake_cmd = 0.0
+        self.steering_saturated = False
+        self.velocity_saturated = False
+        self.pitch = 0.0
+        self.pitch_rate = 0.0
+        self.roll = 0.0
+        self.roll_rate = 0.0
+        # Approximate inertias for pitch/roll (box approximation)
+        self.inertia_pitch = self.mass * (self.wheelbase ** 2) / 12.0
+        self.inertia_roll = self.mass * (self.track_width ** 2) / 12.0
+        # Input shaping / stability
+        self.input_steer_rate = INPUT_STEER_RATE
+        self.input_steer_deadzone = INPUT_STEER_DEADZONE
+        self.input_brake_rate = INPUT_BRAKE_RATE
+        self.stability_lat_accel_g = STABILITY_MAX_LAT_ACCEL_G
+        # Differential params
+        self.diff_outer_bias = DIFF_OUTER_BIAS
+        self.diff_max_outer = DIFF_MAX_OUTER
         
         # ====================================================================
         # Rendering Dimensions (pixels)
@@ -139,113 +139,50 @@ class Car:
         self.width = 1.71 * self.pixels_per_meter    # 1710mm
         self.height = 1.39 * self.pixels_per_meter   # 1390mm
         self.hood_height = 1.0 * self.pixels_per_meter  # estimated
-
-    # ========================================================================
-    # WHEEL DYNAMICS HELPER METHODS
-    # ========================================================================
-    
-    def _calculate_wheel_slip_ratios(self):
-        """Calculate longitudinal slip ratio for each wheel.
         
-        Slip ratio σ = (ω*r - v) / max(|v|, 0.1)
-        where:
-          ω = wheel angular velocity (rad/s)
-          r = wheel radius (m)
-          v = vehicle longitudinal velocity (m/s)
-        
-        Returns:
-            np.array: [σ_fl, σ_fr, σ_rl, σ_rr]
-        """
-        # Wheel surface speed
-        wheel_speeds = self.wheel_omega * self.wheel_radius  # m/s
-        
-        # Avoid division by zero at very low speeds
-        v_denom = max(abs(self.velocity), 0.1)
-        
-        # Slip ratio for each wheel
-        slip_ratios = (wheel_speeds - self.velocity) / v_denom
-        
-        return slip_ratios
-    
-    def _calculate_tire_forces(self, slip_ratios, normal_forces):
-        """Calculate longitudinal tire forces based on slip ratios.
-        
-        Uses a simplified Pacejka-like model with smooth saturation:
-        - Linear region: F = k * σ
-        - Smooth transition to friction limit using tanh
-        
-        Args:
-            slip_ratios: np.array of 4 slip ratios
-            normal_forces: np.array of 4 normal forces (N)
-        
-        Returns:
-            np.array: [F_fl, F_fr, F_rl, F_rr] tire forces (N)
-        """
-        tire_forces = np.zeros(4)
-        
-        for i in range(4):
-            # Friction limit
-            f_max = self.tire_mu_static * normal_forces[i]
-            
-            # Smooth saturation using tanh (prevents stiff oscillations)
-            # At small slip: F ≈ k*σ, at large slip: F ≈ ±f_max
-            slip_normalized = (self.tire_long_stiffness * slip_ratios[i]) / (f_max + 1e-6)
-            tire_forces[i] = f_max * np.tanh(slip_normalized)
-        
-        return tire_forces
+        # Wheel rotation for animation
+        self.wheel_rotation = 0.0  # radians
 
     # ========================================================================
     # MAIN UPDATE LOOP
     # ========================================================================
     
     def update(self, dt, keys, lka_steering=None, lka_controller=None, override_throttle=None, override_brake=None):
-        """
-        Update car state based on user input and LKA control.
-        
-        Parameters:
-        - override_throttle: If set, overrides user throttle input (for hybrid controller)
-        - override_brake: If set, overrides user brake input (for hybrid controller)
-        """
+        """Update car state based on user input, LKA steering, and optional actuator overrides."""
         
         # ====================================================================
-        # LONGITUDINAL CONTROL - User Input (or Override)
+        # LONGITUDINAL CONTROL - User Input
         # ====================================================================
-        # W = Forward throttle
-        # S = Reverse throttle
-        # SPACE = Brake
         desired_throttle = 0.0
         desired_brake = 0.0
-        
-        # Check if we have overrides from hybrid controller
+
         if override_throttle is not None or override_brake is not None:
-            # Hybrid controller is providing speed control
+            # Hybrid ASSIST mode can override pedals
             desired_throttle = override_throttle if override_throttle is not None else 0.0
             desired_brake = override_brake if override_brake is not None else 0.0
-            # DEBUG - print every 30 frames
-            if hasattr(self, '_debug_counter'):
-                self._debug_counter += 1
-            else:
-                self._debug_counter = 0
-            if self._debug_counter % 30 == 0:
-                throttle_str = f"{override_throttle:.3f}" if override_throttle is not None else "None"
-                brake_str = f"{override_brake:.3f}" if override_brake is not None else "None"
-                # print(f"[CAR INPUT] override_throttle={throttle_str}, override_brake={brake_str}")
         else:
-            # Normal manual control
             if keys[pygame.K_w] and not keys[pygame.K_s]:
                 desired_throttle = 1.0
                 desired_brake = 0.0
             elif keys[pygame.K_s] and not keys[pygame.K_w]:
-                # Reverse gear
-                desired_throttle = -1.0
-                desired_brake = 0.0
-            elif keys[pygame.K_SPACE]:
-                # Brake pedal
-                desired_throttle = 0.0
-                desired_brake = 1.0
+                # If moving forward, treat S as brake; if near zero, allow reverse
+                if self.velocity > 0.5:
+                    desired_throttle = 0.0
+                    desired_brake = 1.0
+                else:
+                    desired_throttle = -1.0
+                    desired_brake = 0.0
             else:
                 desired_throttle = 0.0
                 desired_brake = 0.0
+
+        # Input shaping: brake ramp to avoid step changes
+        brake_step = self.input_brake_rate * dt
+        desired_brake = np.clip(desired_brake, 0.0, 1.0)
+        desired_brake = np.clip(desired_brake,
+                                self._prev_brake_cmd - brake_step,
+                                self._prev_brake_cmd + brake_step)
+        self._prev_brake_cmd = desired_brake
 
         # ====================================================================
         # ACTUATOR DYNAMICS - First-order response
@@ -259,160 +196,100 @@ class Car:
             self.brake_state += (desired_brake - self.brake_state) * (dt / self.brake_tau)
         else:
             self.brake_state = desired_brake
-        
-        # DEBUG - show final actuator states
-        if desired_brake > 0 and override_brake is not None:
-            # print(f"[CAR ACTUATORS] throttle_state={self.throttle_state:.3f}, brake_state={self.brake_state:.3f}")
-            pass
 
         # ====================================================================
-        # WHEEL DYNAMICS AND LONGITUDINAL FORCES
+        # NORMAL FORCES (for tire grip limits)
         # ====================================================================
-        # Calculate normal force distribution (simplified: static weight distribution)
-        # Front/rear weight split based on CG position
         weight_total = self.mass * self.g
         weight_front = weight_total * (self.lr / self.wheelbase)
         weight_rear = weight_total * (self.lf / self.wheelbase)
-        
-        # Downforce (increases normal force)
+
         downforce = 0.5 * self.rho * self.c_l * self.downforce_area * self.velocity * abs(self.velocity)
-        downforce_front = downforce * 0.4  # 40% front
-        downforce_rear = downforce * 0.6   # 60% rear
-        
-        # Normal forces per wheel (N)
+        downforce_front = downforce * 0.4  # bias front to account for aero balance
+        downforce_rear = downforce * 0.6
+
         normal_forces = np.array([
-            (weight_front + downforce_front) / 2,  # front left
-            (weight_front + downforce_front) / 2,  # front right
-            (weight_rear + downforce_rear) / 2,    # rear left
-            (weight_rear + downforce_rear) / 2     # rear right
+            (weight_front + downforce_front) * 0.5,
+            (weight_front + downforce_front) * 0.5,
+            (weight_rear + downforce_rear) * 0.5,
+            (weight_rear + downforce_rear) * 0.5,
         ])
-        
-        # Calculate slip ratios
-        slip_ratios = self._calculate_wheel_slip_ratios()
-        
-        # ----------------------------------------------------------------
-        # SIMPLIFIED DRIVE MODEL (no wheel dynamics oscillation)
-        # ----------------------------------------------------------------
-        # Drive force applied to rear wheels (RWD), handles forward and reverse
-        if abs(self.throttle_state) > 0.01:
-            # Calculate available drive force based on power curve
-            # At low speeds: torque-limited (max torque)
-            # At high speeds: power-limited (F = P / v)
-            speed_abs = max(abs(self.velocity), 0.1)  # Avoid division by zero
-            
-            if speed_abs < self.min_speed_power_limit:
-                # Low speed: torque-limited (constant force from max torque)
-                max_available_force = self.max_torque_force
-            else:
-                # High speed: power-limited (force decreases with speed)
-                max_available_force = self.wheel_power / speed_abs
-            
-            # Apply throttle position and direction
-            desired_drive_force = self.throttle_state * max_available_force
-            
-            # Limit by available tire grip (prevent excessive spin)
-            rear_normal = normal_forces[2] + normal_forces[3]
-            max_grip_force = rear_normal * self.tire_mu_static
-            
-            # Apply drive force directly (simplified - no wheel dynamics)
-            f_drive = np.sign(desired_drive_force) * min(abs(desired_drive_force), max_grip_force)
+        rear_normal = normal_forces[2] + normal_forces[3]
+
+        # ====================================================================
+        # LONGITUDINAL FORCES
+        # ====================================================================
+        vel_sign = np.sign(self.velocity) if abs(self.velocity) > 0.01 else 0.0
+
+        # Drive force limited by available rear tire grip (HL tire model)
+        desired_drive_force = self.throttle_state * self.max_drive_force  # N
+        max_rear_grip = rear_normal * self.tire_mu_static
+        if max_rear_grip > 1e-6:
+            normalized_drive = desired_drive_force / max_rear_grip
+            f_drive = max_rear_grip * np.tanh(normalized_drive)
         else:
             f_drive = 0.0
-        
-        # Brake force (all wheels, proportional distribution)
-        if self.brake_state > 0:
-            desired_brake_force = self.brake_state * self.max_brake_force
-            vel_sign = np.sign(self.velocity) if abs(self.velocity) > 0.01 else 0.0
-            f_brake = -desired_brake_force * vel_sign
-        else:
-            f_brake = 0.0
-        
+
+        # Brake force (includes reverse if moving backward)
+        f_brake = self.brake_state * self.max_brake_force * (-vel_sign)  # N
+
         # Engine braking (when coasting)
         if abs(self.throttle_state) < 0.05:
             base_engine_braking = 300.0  # N
             speed_factor = abs(self.velocity) * 30.0  # N·s/m
-            vel_sign = np.sign(self.velocity) if abs(self.velocity) > 0.01 else 0.0
             f_engine_braking = -(base_engine_braking + speed_factor) * vel_sign
         else:
             f_engine_braking = 0.0
-        
+
         # Aerodynamic drag: F = 0.5 * ρ * Cd * A * v²
         f_drag = -0.5 * self.rho * self.c_d * self.area * self.velocity * abs(self.velocity)  # N
-        
+
         # Rolling resistance: F = Crr * m * g
-        vel_sign = np.sign(self.velocity) if abs(self.velocity) > 0.01 else 0.0
         f_rolling = -self.c_rr * self.mass * self.g * vel_sign  # N
-        
+
         # Cornering drag (energy lost to tire slip during steering)
         steering_drag_coeff = 0.15
         f_cornering_drag = -steering_drag_coeff * self.mass * abs(self.steering_angle) * self.velocity * abs(self.velocity)  # N
         
         # ====================================================================
-        # VEHICLE BODY VELOCITY INTEGRATION
+        # VELOCITY INTEGRATION
         # ====================================================================
-        # Net force on body (drive + brake + resistances)
+        # Net force and acceleration
         f_net = f_drive + f_brake + f_engine_braking + f_drag + f_rolling + f_cornering_drag
-        
-        # Use total mass (body + wheels)
         acceleration = f_net / self.mass  # m/s²
+        a_x = acceleration
         
         # Update velocity
         self.velocity += acceleration * dt
         
-        # 0-100 km/h acceleration test timing
-        speed_kmh = self.velocity * 3.6
-        if not self.accel_test_active and self.throttle_state > 0.9 and speed_kmh < 5.0:
-            # Start timing when full throttle applied from low speed
-            self.accel_test_active = True
-            self.accel_test_start_time = pygame.time.get_ticks() / 1000.0
-            self.accel_test_completed = False
-            print(f"\n🚀 0-100 km/h test started at {speed_kmh:.1f} km/h")
-            print(f"   Engine: {ENGINE_HORSEPOWER} hp, Max Force: {self.max_torque_force:.1f} N")
-        
-        if self.accel_test_active and not self.accel_test_completed and speed_kmh >= 100.0:
-            # Reached 100 km/h
-            elapsed_time = pygame.time.get_ticks() / 1000.0 - self.accel_test_start_time
-            self.accel_test_completed = True
-            print(f"\n✅ 100 km/h REACHED in {elapsed_time:.2f} seconds")
-            print(f"   Final speed: {speed_kmh:.1f} km/h")
-            print(f"   Drive force at 100 km/h: {f_drive:.1f} N")
-            print(f"   Drag at 100 km/h: {f_drag:.1f} N")
-            print(f"   Net force at 100 km/h: {f_net:.1f} N\n")
-        
-        # Update wheel rotation for animation (based on vehicle velocity)
-        distance_traveled = self.velocity * dt
-        self.wheel_rotation -= distance_traveled / self.wheel_radius
-        self.wheel_rotation = self.wheel_rotation % (2 * np.pi)
-        
-        # Update wheel angular velocities to match vehicle speed (no slip model)
-        self.wheel_omega[:] = self.velocity / self.wheel_radius
-        
         # Snap to zero if nearly stopped with no input
         if abs(self.velocity) < 0.01 and desired_throttle == 0 and desired_brake == 0:
             self.velocity = 0.0
-            self.wheel_omega[:] = 0.0  # Stop wheels too
-            # Reset acceleration test
-            if self.accel_test_active:
-                self.accel_test_active = False
-                self.accel_test_completed = False
         
         # Apply velocity limit
+        vel_pre_clip = self.velocity
         self.velocity = np.clip(self.velocity, -self.max_velocity * 0.5, self.max_velocity)
+        self.velocity_saturated = (self.velocity != vel_pre_clip)
 
         # ====================================================================
         # LATERAL CONTROL - Steering
         # ====================================================================
-        manual_steering = keys[pygame.K_a] or keys[pygame.K_d]
+        manual_left = keys[pygame.K_a]
+        manual_right = keys[pygame.K_d]
+        manual_steering = manual_left or manual_right
+        steer_dir = (1 if manual_left else 0) + (-1 if manual_right else 0)
+        target_angle = 0.0
 
         if manual_steering:
-            # Manual steering - deactivate LKA if active
-            if lka_controller and lka_controller.active:
-                lka_controller.deactivate()
-
-            if keys[pygame.K_a]:
-                self.steering_angle += self.max_steering_rate * dt  # LEFT
-            elif keys[pygame.K_d]:
-                self.steering_angle -= self.max_steering_rate * dt  # RIGHT
+            # Ramp toward target with deadzone to reduce twitchiness
+            if steer_dir != 0:
+                target_angle = steer_dir * max(0.0, self.max_steering_angle - self.input_steer_deadzone)
+            max_delta = self.input_steer_rate * dt
+            steer_error = target_angle - self.steering_angle
+            delta = np.clip(steer_error, -max_delta, max_delta)
+            self.steering_angle += delta
+            if abs(target_angle) < self.input_steer_deadzone and abs(self.steering_angle) < self.input_steer_deadzone:
+                self.steering_angle = 0.0
                 
         elif lka_steering is not None:
             # LKA steering - first-order actuator with rate limit
@@ -439,57 +316,81 @@ class Car:
                 self.steering_angle *= 0.9
             else:
                 self.steering_angle = 0
-
-        # Apply steering limit
+        # Apply steering limit and surface saturation status
+        steer_pre_clip = self.steering_angle
         self.steering_angle = np.clip(self.steering_angle, -self.max_steering_angle, self.max_steering_angle)
+        self.steering_saturated = (self.steering_angle != steer_pre_clip or abs(self.steering_angle) >= self.max_steering_angle - 1e-4)
 
         # ====================================================================
         # VEHICLE KINEMATICS - Ackermann Steering with Tire Dynamics
         # ====================================================================
+        lateral_accel = 0.0
+        lateral_accel_signed = 0.0
+
         if abs(self.velocity) > 0.01:
             # ----------------------------------------------------------------
             # Downforce Calculation (increases tire grip)
             # ----------------------------------------------------------------
             # F_downforce = 0.5 * ρ * CL * A * v²
-            downforce = 0.5 * self.rho * self.c_l * self.downforce_area * self.velocity * abs(self.velocity)
-            
+            downforce_lat = 0.5 * self.rho * self.c_l * self.downforce_area * self.velocity * abs(self.velocity)
+
             # Total normal force = weight + downforce
             weight = self.mass * self.g
-            total_normal_force = weight + downforce
-            
-            # Maximum lateral grip with downforce
-            base_friction_coeff = 0.8  # Road tire friction
-            max_lateral_force = base_friction_coeff * total_normal_force
-            max_lateral_accel_with_downforce = max_lateral_force / self.mass
-            
+            total_normal_force_lat = weight + downforce_lat
+
+            # Maximum lateral grip with downforce and stability cap (no Pacejka)
+            base_friction_coeff = self.tire_mu_static
+            stability_cap = self.stability_lat_accel_g * self.g
+            max_lateral_accel = min(
+                base_friction_coeff * total_normal_force_lat / self.mass,
+                stability_cap,
+            )
+
             # ----------------------------------------------------------------
             # Speed-Dependent Handling
             # ----------------------------------------------------------------
             velocity_threshold = 5.0  # m/s
-            
+
             if abs(self.velocity) < velocity_threshold:
                 # Low speed: Simple Ackermann kinematics
                 omega = self.velocity * np.tan(self.steering_angle) / self.wheelbase
+                lateral_accel = 0.0
+                lateral_accel_signed = 0.0
             else:
-                # High speed: Include tire slip and grip limits
-                beta = np.arctan2(self.lr * np.tan(self.steering_angle), self.wheelbase)
-                
+                # High speed: include tire grip limit without Pacejka
                 if abs(self.steering_angle) > 0.001:
                     turn_radius = abs(self.wheelbase / np.tan(self.steering_angle))
                     lateral_accel = (self.velocity ** 2) / turn_radius
-                    
-                    # Check if exceeding grip limit
-                    if lateral_accel > max_lateral_accel_with_downforce:
-                        # Understeer/slip - reduce effective steering
-                        grip_factor = max_lateral_accel_with_downforce / lateral_accel
+                    lateral_accel_signed = lateral_accel * np.sign(self.steering_angle)
+
+                    # Cap steering based on available lateral acceleration
+                    if lateral_accel > max_lateral_accel:
+                        grip_factor = max_lateral_accel / lateral_accel
                         effective_steering = self.steering_angle * grip_factor
+                        lateral_accel = max_lateral_accel
+                        lateral_accel_signed = max_lateral_accel * np.sign(self.steering_angle)
                     else:
                         effective_steering = self.steering_angle
-                    
+
                     omega = self.velocity * np.tan(effective_steering) / self.wheelbase
                 else:
                     omega = 0.0
-            
+                    lateral_accel = 0.0
+                    lateral_accel_signed = 0.0
+
+            # ----------------------------------------------------------------
+            # Simple pitch/roll suspension dynamics (2 DOF)
+            # ----------------------------------------------------------------
+            pitch_moment = self.mass * a_x * self.cg_height
+            pitch_accel = (pitch_moment - SUSP_PITCH_DAMPING * self.pitch_rate - SUSP_PITCH_STIFFNESS * self.pitch) / max(self.inertia_pitch, 1e-3)
+            self.pitch_rate += pitch_accel * dt
+            self.pitch += self.pitch_rate * dt
+
+            roll_moment = self.mass * lateral_accel_signed * self.cg_height * (self.track_width / 2.0)
+            roll_accel = (roll_moment - SUSP_ROLL_DAMPING * self.roll_rate - SUSP_ROLL_STIFFNESS * self.roll) / max(self.inertia_roll, 1e-3)
+            self.roll_rate += roll_accel * dt
+            self.roll += self.roll_rate * dt
+
             # ----------------------------------------------------------------
             # Position and Orientation Integration
             # ----------------------------------------------------------------
@@ -500,8 +401,7 @@ class Car:
             self.theta += omega * dt
             self.theta = np.arctan2(np.sin(self.theta), np.cos(self.theta))
 
-            # Update wheel rotation for animation (legacy average)
-            # Use mean of all 4 wheels for backwards compatibility
+            # Update wheel rotation for animation
             distance_traveled = self.velocity * dt
             self.wheel_rotation -= distance_traveled / self.wheel_radius
             self.wheel_rotation = self.wheel_rotation % (2 * np.pi)
@@ -889,5 +789,3 @@ class Car:
             self.x = self.prev_x
             self.y = self.prev_y
             self.velocity = 0  # Stop the car
-
-
