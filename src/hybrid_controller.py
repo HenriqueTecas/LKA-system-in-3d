@@ -131,7 +131,7 @@ class HybridLaneController:
         if mode in [self.MODE_MANUAL, self.MODE_WARNING, self.MODE_ASSIST]:
             self.mode = mode
             self.warnings = {k: False for k in self.warnings}  # Clear warnings
-            print(f"Hybrid Controller Mode: {['MANUAL', 'WARNING', 'ASSIST'][mode]}")
+            # Mode change acknowledged (debug prints removed)
             return True
         return False
     
@@ -226,13 +226,11 @@ class HybridLaneController:
         has_right = len(lane_right) >= self.min_points_for_direction
         
         if self.debug:
-            print(f"\n[LKA DEBUG] === Boundary Detection ===")
-            print(f"[LKA DEBUG] Left boundary points: {len(lane_left)} (has_left: {has_left})")
-            print(f"[LKA DEBUG] Right boundary points: {len(lane_right)} (has_right: {has_right})")
+            # Debug prints removed
+            pass
         
         if not has_left and not has_right:
-            if self.debug:
-                print(f"[LKA DEBUG] No boundaries detected! Using last steering: {np.degrees(self.last_steering):.2f}°")
+            # No boundaries detected - use last steering
             return self.last_steering  # BFMC: Keep last good steering when lanes lost
         
         # Build center line from available boundaries
@@ -293,41 +291,32 @@ class HybridLaneController:
                             # No prediction in very sharp curves - use exact center
                             self.center_line_points.append(center_avg[i])
                     
-                    if self.debug:
-                        print(f"[LKA DEBUG] BOTH boundaries: curvature={curvature:.6f}, lookahead={lookahead_points} points, speed={current_speed*3.6:.1f}km/h")
+                    # Debug prints removed for BOTH boundaries
                 except:
                     # Fallback to simple average if polynomial fails
                     self.center_line_points = center_avg
-                    if self.debug:
-                        print(f"[LKA DEBUG] Using BOTH boundaries (simple average, polynomial failed) - {n} points")
             else:
                 self.center_line_points = center_avg
-                if self.debug:
-                    print(f"[LKA DEBUG] Using BOTH boundaries (simple average, too few points) - {n} points")
+                # Fallback: simple average used
         elif has_left:
             # Only left boundary: create virtual center
             self.center_line_points = self._create_virtual_center(
                 lane_left, car_x, car_y, car_theta, offset_right=True, current_speed=current_speed
             )
-            if self.debug:
-                print(f"[LKA DEBUG] Using LEFT boundary only - {len(lane_left)} points (camera provides 2.0m spacing)")
+            # Left boundary only: using virtual center
         else:
             # Only right boundary: create virtual center
             self.center_line_points = self._create_virtual_center(
                 lane_right, car_x, car_y, car_theta, offset_right=False, current_speed=current_speed
             )
-            if self.debug:
-                print(f"[LKA DEBUG] Using RIGHT boundary only - {len(lane_right)} points (camera provides 2.0m spacing)")
+            # Right boundary only: using virtual center
         
-        if self.debug and len(self.center_line_points) > 0:
+        if len(self.center_line_points) > 0:
             first_pt = self.center_line_points[0]
             last_pt = self.center_line_points[-1]
-            print(f"[LKA DEBUG] Final center line: {len(self.center_line_points)} points (2.0m spacing)")
-            print(f"[LKA DEBUG] Center line - first: ({first_pt[0]:.2f}, {first_pt[1]:.2f}), last: ({last_pt[0]:.2f}, {last_pt[1]:.2f})")
         
         if len(self.center_line_points) < 2:
-            if self.debug:
-                print(f"[LKA DEBUG] Not enough center points: {len(self.center_line_points)}")
+            # Not enough center points
             return None
         
         # Calculate weighted lateral error (professional approach adapted for 3D)
@@ -342,12 +331,7 @@ class HybridLaneController:
         perp_x = -np.sin(car_theta)    # perpendicular to heading (positive = left)
         perp_y = np.cos(car_theta)
         
-        if self.debug:
-            print(f"\n[LKA DEBUG] ========== STEERING CALCULATION ==========")
-            print(f"[LKA DEBUG] Car position: ({car_x:.2f}, {car_y:.2f}), heading: {np.degrees(car_theta):.1f}°")
-            print(f"[LKA DEBUG] Forward vector: ({forward_x:.3f}, {forward_y:.3f})")
-            print(f"[LKA DEBUG] Perpendicular vector: ({perp_x:.3f}, {perp_y:.3f})")
-            print(f"[LKA DEBUG] Total center line points: {len(self.center_line_points)}")
+        # Debug prints removed for steering calculation
         
         points_behind = 0
         for i, (px, py) in enumerate(self.center_line_points):
@@ -370,19 +354,15 @@ class HybridLaneController:
             # POSITIVE when point is to the LEFT, NEGATIVE when point is to the RIGHT
             lateral_error = dx * perp_x + dy * perp_y
             
-            if self.debug and i < 3:  # Show first 3 points
-                print(f"[LKA DEBUG]   Point {i}: ({px:.2f}, {py:.2f}), forward: {forward_dist:.2f}m, lateral: {lateral_error:.2f}m")
+            # initial points suppressed for cleaner output
             
             lateral_errors.append(lateral_error)
             forward_distances.append(forward_dist)
         
-        if self.debug and points_behind > 0:
-            print(f"[LKA DEBUG] Points behind car (skipped): {points_behind}")
-            print(f"[LKA DEBUG] Points ahead of car: {len(lateral_errors)}")
+        # points behind/ahead summary suppressed
         
         if len(lateral_errors) == 0:
-            if self.debug:
-                print(f"[LKA DEBUG] No points ahead of car! Using last steering: {np.degrees(self.last_steering):.2f}°")
+            # No valid forward points - use last steering
             return self.last_steering  # BFMC: Keep last good steering
         
         # Weight by inverse forward distance (professional approach)
@@ -408,11 +388,7 @@ class HybridLaneController:
             forward_distances = forward_distances[close_enough_mask]
             lateral_errors = lateral_errors[close_enough_mask]
         
-        if self.debug:
-            print(f"[LKA DEBUG] Speed: {current_speed*3.6:.1f} km/h, Adaptive lookahead: {max_lookahead:.2f}m")
-            print(f"[LKA DEBUG] Forward distances - min: {forward_distances.min():.2f}m, max: {forward_distances.max():.2f}m, avg: {forward_distances.mean():.2f}m")
-            print(f"[LKA DEBUG] Lateral errors - min: {lateral_errors.min():.2f}m, max: {lateral_errors.max():.2f}m, avg: {lateral_errors.mean():.2f}m")
-            print(f"[LKA DEBUG] Using {len(forward_distances)} points within {max_lookahead:.2f}m lookahead")
+        # Adaptive lookahead debug output removed
         
         # Normalize forward distances to [0, 1] range
         max_dist = np.max(forward_distances)
@@ -466,9 +442,7 @@ class HybridLaneController:
                 # Small heading errors become position errors further ahead
                 heading_error_contribution = heading_error * self.image_height_equivalent * self.heading_correction_weight
                 
-                if self.debug:
-                    print(f"[LKA DEBUG] Path heading: {np.degrees(path_heading):.1f}°, Car heading: {np.degrees(car_heading):.1f}°")
-                    print(f"[LKA DEBUG] Heading error: {np.degrees(heading_error):.2f}°, contribution: {heading_error_contribution:.3f}m")
+                # Heading debug prints removed
         
         # Combine lateral error with heading correction
         combined_error = weighted_error + heading_error_contribution
@@ -482,12 +456,7 @@ class HybridLaneController:
         raw_steering_degrees = 90.0 - np.degrees(np.arctan2(self.image_height_equivalent, combined_error))
         raw_steering = np.radians(raw_steering_degrees)
         
-        if self.debug:
-            print(f"[LKA DEBUG] Lateral error: {weighted_error:.3f}m, Combined error: {combined_error:.3f}m")
-            print(f"[LKA DEBUG] Avg forward distance: {avg_forward_dist:.2f}m")
-            print(f"[LKA DEBUG] Image height equiv: {self.image_height_equivalent:.1f}m")
-            print(f"[LKA DEBUG] Raw steering angle: {np.degrees(raw_steering):.2f}° (BFMC formula)")
-            print(f"[LKA DEBUG] Weight distribution - min: {weights.min():.3f}, max: {weights.max():.3f}")
+        # Steering debug outputs removed
         
         # Store target point for visualization (use FIXED LOOKAHEAD, not closest!)
         if len(self.center_line_points) > 0:
@@ -532,10 +501,7 @@ class HybridLaneController:
         
         final_steering = np.median(self.steering_history)
         
-        if self.debug:
-            print(f"[LKA DEBUG] Clipped steering: {np.degrees(steering_angle):.2f}°")
-            print(f"[LKA DEBUG] Rolling median ({len(self.steering_history)} frames): {np.degrees(final_steering):.2f}°")
-            print(f"[LKA DEBUG] ==========================================\n")
+        # Final steering debug prints removed
         
         self.last_steering = final_steering  # Store for fallback (BFMC approach)
         return final_steering

@@ -97,7 +97,7 @@ ROLLING_RESISTANCE_COEFF = 0.015  # Dimensionless coefficient
 # DRIVETRAIN AND ACTUATORS
 # ============================================================================
 # Engine power (MAIN PARAMETER - adjust this to change car performance)
-ENGINE_HORSEPOWER = 200  # hp (brake horsepower)
+ENGINE_HORSEPOWER = 150  # hp (brake horsepower)
 ENGINE_POWER_WATTS = ENGINE_HORSEPOWER * 745.7  # Convert hp to watts (1 hp = 745.7 W)
 
 # Drivetrain efficiency (power loss in transmission, differential, etc.)
