@@ -59,15 +59,15 @@ class RealisticCameraSensor:
         # Real automotive LKA cameras have distance-dependent reliability:
         # 0-30m: ~100% confidence (optimal range)
         # 30-40m: 100% → 80% confidence (good range)
-        # 40-50m: 80% → 30% confidence (degraded range)
-        # 50m+: <30% confidence (unreliable)
+        # 40-70m: 80% → 30% confidence (degraded range) - EXTENDED for earlier curve detection
+        # 70m+: <30% confidence (unreliable)
         self.min_detection_distance = 1.0  # meters (minimum distance)
         self.optimal_detection_distance = 30.0  # meters (100% confidence)
         self.good_detection_distance = 40.0  # meters (80% confidence)
-        self.max_detection_distance = 50.0  # meters (30% confidence)
+        self.max_detection_distance = 55.0  # meters (30% confidence) - INCREASED for curve anticipation
         self.sample_interval = 4.0  # Sample every 4.0 meters along lane (PERFORMANCE: 4x fewer points)
         self.interpolation_interval = 6.0  # Interpolation density (PERFORMANCE: reduced computation)
-        self.detection_max_range = 50.0  # Maximum detection range
+        self.detection_max_range = 70.0  # Maximum detection range - INCREASED for curve anticipation
         self.detection_min_range = 1.0  # Minimum detection range
         self.pixels_per_meter = float(PIXELS_PER_METER)
         self.use_uniform_sampling = True  # Use optimized uniform sampling

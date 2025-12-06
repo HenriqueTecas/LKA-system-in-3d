@@ -19,7 +19,7 @@ from .config import (
     SUSP_ROLL_DAMPING, DIFF_OUTER_BIAS, DIFF_MAX_OUTER,
     ROLLING_RESISTANCE_COEFF, GRAVITY, MAX_DRIVE_FORCE, MAX_BRAKE_FORCE,
     THROTTLE_TAU, BRAKE_TAU, STEERING_TAU, MAX_STEERING_ANGLE, MAX_STEERING_RATE,
-    MAX_VELOCITY, INPUT_STEER_RATE, INPUT_STEER_DEADZONE, INPUT_BRAKE_RATE,
+    MAX_VELOCITY, INPUT_STEER_RATE, INPUT_STEER_DEADZONE,
     STABILITY_MAX_LAT_ACCEL_G
 )
 
@@ -112,7 +112,6 @@ class Car:
         self.throttle_tau = float(THROTTLE_TAU)  # seconds
         self.brake_tau = float(BRAKE_TAU)  # seconds
         self.steering_tau = float(STEERING_TAU)  # seconds
-        self._prev_brake_cmd = 0.0
         self.steering_saturated = False
         self.velocity_saturated = False
         self.pitch = 0.0
@@ -125,7 +124,6 @@ class Car:
         # Input shaping / stability
         self.input_steer_rate = INPUT_STEER_RATE
         self.input_steer_deadzone = INPUT_STEER_DEADZONE
-        self.input_brake_rate = INPUT_BRAKE_RATE
         self.stability_lat_accel_g = STABILITY_MAX_LAT_ACCEL_G
         # Differential params
         self.diff_outer_bias = DIFF_OUTER_BIAS
@@ -176,16 +174,12 @@ class Car:
                 desired_throttle = 0.0
                 desired_brake = 0.0
 
-        # Input shaping: brake ramp to avoid step changes
-        brake_step = self.input_brake_rate * dt
+        # Clamp inputs
+        desired_throttle = np.clip(desired_throttle, -1.0, 1.0)
         desired_brake = np.clip(desired_brake, 0.0, 1.0)
-        desired_brake = np.clip(desired_brake,
-                                self._prev_brake_cmd - brake_step,
-                                self._prev_brake_cmd + brake_step)
-        self._prev_brake_cmd = desired_brake
 
         # ====================================================================
-        # ACTUATOR DYNAMICS - First-order response
+        # ACTUATOR DYNAMICS - First-order response (applies to ALL inputs)
         # ====================================================================
         if self.throttle_tau > 0:
             self.throttle_state += (desired_throttle - self.throttle_state) * (dt / self.throttle_tau)

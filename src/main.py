@@ -28,12 +28,13 @@ from .car import Car
 from .realistic_camera import RealisticCameraSensor
 from .lka_controller import PurePursuitLKA
 from .mpc_controller import MPCLaneKeeping
-from .hybrid_controller_clean import HybridLaneController
+from .hybrid_controller import HybridLaneController
 from .track import SaoPauloTrack
 from .renderer import Renderer3D
 from .minimap import Minimap
 from .hud import HUD
 from .lane_logger import LaneDetectionLogger
+from .lka_logger import LKAPerformanceLogger
 
 
 def init_display():
@@ -107,7 +108,8 @@ def starter_menu():
     params = {}
     params["INPUT_STEER_RATE"] = prompt_float("Manual steer rate (rad/s)", INPUT_STEER_RATE)
     params["INPUT_STEER_DEADZONE"] = prompt_float("Steer deadzone (rad)", INPUT_STEER_DEADZONE)
-    params["INPUT_BRAKE_RATE"] = prompt_float("Brake ramp rate (per second)", INPUT_BRAKE_RATE)
+    params["THROTTLE_TAU"] = prompt_float("Throttle response time (sec, 0=instant)", THROTTLE_TAU)
+    params["BRAKE_TAU"] = prompt_float("Brake response time (sec, 0=instant)", BRAKE_TAU)
     params["STABILITY_MAX_LAT_ACCEL_G"] = prompt_float("Stability lateral accel cap (g)", STABILITY_MAX_LAT_ACCEL_G)
     print("====================================================\n")
     return params
@@ -132,7 +134,8 @@ def main():
     # Apply runtime overrides to car instance
     car.input_steer_rate = overrides["INPUT_STEER_RATE"]
     car.input_steer_deadzone = overrides["INPUT_STEER_DEADZONE"]
-    car.input_brake_rate = overrides["INPUT_BRAKE_RATE"]
+    car.throttle_tau = overrides["THROTTLE_TAU"]
+    car.brake_tau = overrides["BRAKE_TAU"]
     car.stability_lat_accel_g = overrides["STABILITY_MAX_LAT_ACCEL_G"]
     car.track = track  # Store reference for camera
 
@@ -156,6 +159,10 @@ def main():
     # Create HUD
     hud = HUD()
     lane_logger = LaneDetectionLogger()
+    
+    # Create LKA performance logger
+    lka_logger = LKAPerformanceLogger(log_dir="logs")
+    hud.lka_logger = lka_logger  # Connect logger to HUD for metrics display
 
     # Pre-allocate texture for overlay (performance optimization)
     overlay_texture_id = glGenTextures(1)
@@ -194,6 +201,23 @@ def main():
                     hybrid.set_mode(HybridLaneController.MODE_WARNING)
                 elif event.key == pygame.K_3:
                     hybrid.set_mode(HybridLaneController.MODE_ASSIST)
+                elif event.key == pygame.K_l:
+                    # Save session and generate plots
+                    print("\n[LKA Logger] Saving session data...")
+                    lka_logger.print_summary()
+                    session_file = lka_logger.save_session()
+                    
+                    # Try to generate plots
+                    try:
+                        from .lka_logger import LKAVisualizationGenerator
+                        print("[LKA Logger] Generating visualization plots...")
+                        viz = LKAVisualizationGenerator(session_file)
+                        viz.generate_all_plots(output_dir="plots")
+                        print("[LKA Logger] ✓ Plots saved to plots/ directory")
+                    except ImportError as e:
+                        print(f"[LKA Logger] ! Cannot generate plots (matplotlib not installed): {e}")
+                    except Exception as e:
+                        print(f"[LKA Logger] ! Error generating plots: {e}")
                 elif event.key == pygame.K_c:
                     if renderer.camera_view_mode == "chase":
                         renderer.camera_view_mode = "realistic"
@@ -215,15 +239,21 @@ def main():
 
             # Hybrid controller (3 modes)
             hybrid_steering, hybrid_throttle, hybrid_brake, hybrid_warnings, hybrid_intervening = hybrid.calculate_control(track)
+            
+            # Log LKA performance metrics (only when hybrid is active)
+            if hybrid.mode != HybridLaneController.MODE_MANUAL:
+                lka_logger.log_frame(current_time, car, hybrid, hybrid_warnings)
 
             # Update car (hybrid overrides pedals in ASSIST mode)
+            # Steering: only when intervening (lane departure)
+            # Throttle/Brake: whenever controller returns a command (independent of lane intervention)
             car.update(
                 physics_dt,
                 keys,
                 hybrid_steering if (hybrid.mode == HybridLaneController.MODE_ASSIST and hybrid_intervening) else None,
                 hybrid,
-                override_throttle=hybrid_throttle if (hybrid.mode == HybridLaneController.MODE_ASSIST and hybrid_intervening) else None,
-                override_brake=hybrid_brake if (hybrid.mode == HybridLaneController.MODE_ASSIST and hybrid_intervening) else None,
+                override_throttle=hybrid_throttle if hybrid.mode == HybridLaneController.MODE_ASSIST else None,
+                override_brake=hybrid_brake if hybrid.mode == HybridLaneController.MODE_ASSIST else None,
             )
 
             # Collision detection disabled for open-world driving
@@ -295,7 +325,7 @@ def main():
         # Draw controls hint
         hint_font = pygame.font.Font(None, 20)
         hint_texts = [
-            "W/S: Accel/Brake | A/D: Steer | 1/2/3: Hybrid modes | C: Toggle camera | ESC: Exit"
+            "W/S: Accel/Brake | A/D: Steer | 1/2/3: Hybrid modes | C: Toggle camera | L: Log session | ESC: Exit"
         ]
         y = HEIGHT - 30
         for hint in hint_texts:
@@ -347,6 +377,10 @@ def main():
         clock.tick(FPS)
 
     # Cleanup
+    print("\n[LKA Logger] Saving final session data...")
+    lka_logger.print_summary()
+    lka_logger.save_session()
+    
     lane_logger.close()
     glDeleteTextures([overlay_texture_id])
     pygame.quit()

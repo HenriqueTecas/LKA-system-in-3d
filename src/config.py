@@ -102,19 +102,19 @@ MAX_DRIVE_FORCE = 6000.0  # N (maximum drive force at wheels)
 MAX_BRAKE_FORCE = 12000.0  # N (maximum braking force at wheels)
 
 # Actuator time constants (seconds) - first-order response
-THROTTLE_TAU = 0.12
-BRAKE_TAU = 0.08
-STEERING_TAU = 0.4
+# These apply to BOTH manual (human) and automatic (controller) inputs
+THROTTLE_TAU = 0.06  # Throttle response time (0 = instant, higher = slower)
+BRAKE_TAU = 0.04      # Brake response time (0 = instant, higher = slower)
+STEERING_TAU = 0.4   # Steering response time
 
 # ============================================================================
 # STEERING SYSTEM
 # ============================================================================
 MAX_STEERING_ANGLE = 0.61  # radians (~35 degrees)
 MAX_STEERING_RATE = 1.05  # rad/s (~60 deg/s)
-# Manual input shaping
+# Manual input shaping (human driver controls)
 INPUT_STEER_RATE = 1.05  # rad/s ramp for manual steering commands
 INPUT_STEER_DEADZONE = 0.02  # rad; small neutral zone to reduce twitch
-INPUT_BRAKE_RATE = 3.0  # rate (per second) to ramp brake input
 STABILITY_MAX_LAT_ACCEL_G = 0.9  # cap lateral accel for stability (in g)
 
 # ============================================================================
