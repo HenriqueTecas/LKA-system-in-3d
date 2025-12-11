@@ -18,6 +18,25 @@ import os
 from collections import deque
 
 
+def _to_serializable(obj):
+    """Recursively convert numpy types to native Python for JSON serialization (NumPy >=2)."""
+    import numpy as _np
+
+    if isinstance(obj, (_np.integer,)):
+        return int(obj)
+    if isinstance(obj, (_np.floating,)):
+        return float(obj)
+    if isinstance(obj, (_np.bool_,)):
+        return bool(obj)
+    if isinstance(obj, _np.ndarray):
+        return [_to_serializable(o) for o in obj.tolist()]
+    if isinstance(obj, (list, tuple)):
+        return [_to_serializable(o) for o in obj]
+    if isinstance(obj, dict):
+        return {k: _to_serializable(v) for k, v in obj.items()}
+    return obj
+
+
 class LKAPerformanceLogger:
     """Logs LKA system performance metrics for analysis and visualization"""
     
@@ -65,7 +84,8 @@ class LKAPerformanceLogger:
         heading_error = self._compute_heading_error(hybrid_controller)
         speed = abs(car.velocity)
         safe_speed = hybrid_controller.safe_speed if hybrid_controller.safe_speed else speed
-        curve_radius = hybrid_controller._last_curve_radius if hybrid_controller._last_curve_radius else float('inf')
+        curve_radius = getattr(hybrid_controller, "_last_curve_radius", None)
+        curve_radius = curve_radius if curve_radius else float('inf')
         lookahead = self._estimate_lookahead(hybrid_controller, speed)
         steering_angle = np.degrees(car.steering_angle)
         intervening = hybrid_controller.intervening
@@ -136,9 +156,8 @@ class LKAPerformanceLogger:
     
     def _estimate_lookahead(self, controller, speed):
         """Estimate current lookahead distance"""
-        return np.clip(speed * controller.lookahead_speed_scale, 
-                      controller.lookahead_min, 
-                      controller.lookahead_max)
+        # Updated for linear control - uses fixed lookahead_distance
+        return getattr(controller, 'lookahead_distance', 15.0)
     
     def get_current_metrics(self):
         """Get current real-time metrics for HUD display"""
@@ -202,6 +221,9 @@ class LKAPerformanceLogger:
             'time_series': self.time_series,
             'trajectories': self.trajectories,
         }
+
+        # Convert numpy scalar types (including np.bool_) to native Python
+        data = _to_serializable(data)
         
         with open(session_file, 'w') as f:
             json.dump(data, f, indent=2)

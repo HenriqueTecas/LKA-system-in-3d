@@ -26,9 +26,8 @@ from .config import *
 from .car import Car
 #from .camera_sensor import CameraSensor
 from .realistic_camera import RealisticCameraSensor
-from .lka_controller import PurePursuitLKA
-from .mpc_controller import MPCLaneKeeping
 from .hybrid_controller import HybridLaneController
+from .sensors import SensorSuite
 from .track import SaoPauloTrack
 from .renderer import Renderer3D
 from .minimap import Minimap
@@ -145,10 +144,11 @@ def main():
     camera = RealisticCameraSensor(car)
     # To use simple camera: camera = CameraSensor(car)
 
-    # Create LKA controllers
-    lka = PurePursuitLKA(car, camera)  # kept for compatibility with minimap/log plotting (inactive)
-    mpc = MPCLaneKeeping(car, camera)  # kept for compatibility with minimap/log plotting (inactive)
-    hybrid = HybridLaneController(car, camera)
+    # Simulated ego sensors (IMU, GNSS, wheel encoder)
+    sensors = SensorSuite(car)
+
+    # Create hybrid controller (primary assist)
+    hybrid = HybridLaneController(car, camera, sensors=sensors, track=track)
 
     # Create renderer
     renderer = Renderer3D(WIDTH, HEIGHT)
@@ -232,6 +232,8 @@ def main():
         # Run physics updates at fixed timestep. Controllers and vehicle state
         # are advanced in these steps so their timing is deterministic.
         while accumulator >= physics_dt:
+            # Update simulated sensors before using them for control
+            sensors.update(physics_dt, current_time)
             # Detect lanes once per physics step (shared by controllers and visualization)
             left_lane, center_lane, right_lane = camera.detect_lanes(track)
             last_detections = (left_lane, center_lane, right_lane)
@@ -245,15 +247,21 @@ def main():
                 lka_logger.log_frame(current_time, car, hybrid, hybrid_warnings)
 
             # Update car (hybrid overrides pedals in ASSIST mode)
-            # Steering: only when intervening (lane departure)
-            # Throttle/Brake: whenever controller returns a command (independent of lane intervention)
+            # New behavior: when in ASSIST, override human steering whenever the
+            # controller is intervening OR any lane/speed warnings are active.
+            should_override_steer = False
+            if hybrid.mode == HybridLaneController.MODE_ASSIST:
+                lane_warn = hybrid_warnings.get("lane_departure") or hybrid_warnings.get("time_to_crossing")
+                speed_warn = hybrid_warnings.get("speed_too_high")
+                should_override_steer = hybrid_intervening or lane_warn or speed_warn
+
             car.update(
                 physics_dt,
                 keys,
-                hybrid_steering if (hybrid.mode == HybridLaneController.MODE_ASSIST and hybrid_intervening) else None,
-                hybrid,
+                hybrid_steering if should_override_steer else None,
                 override_throttle=hybrid_throttle if hybrid.mode == HybridLaneController.MODE_ASSIST else None,
                 override_brake=hybrid_brake if hybrid.mode == HybridLaneController.MODE_ASSIST else None,
+                force_autosteer=should_override_steer,
             )
 
             # Collision detection disabled for open-world driving
@@ -273,10 +281,6 @@ def main():
 
         # Draw lane markers
         renderer.draw_lane_markers_3d(camera, track)
-
-        # Draw Pure Pursuit lookahead points (yellow) and MPC trajectory (silver) if ever activated
-        renderer.draw_lookahead_point_3d(lka)
-        renderer.draw_mpc_trajectory_3d(mpc)
 
         # Draw Hybrid target/direction (yellow)
         renderer.draw_hybrid_target_3d(hybrid, car)
@@ -304,7 +308,7 @@ def main():
         hud.render(overlay_surface, car, camera, current_fps, renderer.camera_view_mode, hybrid, hybrid_warnings)
 
         # Render minimap (pass both controllers)
-        minimap_surface = minimap.render(car, camera, lka, mpc, lane_measurements=last_detections)
+        minimap_surface = minimap.render(car, camera, lane_measurements=last_detections)
         minimap_pos = (WIDTH - MINIMAP_SIZE - 10, 10)
 
         # Draw minimap background

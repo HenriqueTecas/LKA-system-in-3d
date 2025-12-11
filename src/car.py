@@ -4,9 +4,7 @@ Part of the 3D Robotics Lab simulation.
 """
 
 import pygame
-from pygame.locals import *
 from OpenGL.GL import *
-from OpenGL.GLU import *
 import numpy as np
 from .config import (
     PIXELS_PER_METER, VEHICLE_MASS, VEHICLE_INERTIA_Z, VEHICLE_WHEELBASE,
@@ -16,7 +14,7 @@ from .config import (
     TIRE_STATIC_FRICTION, TIRE_KINETIC_FRICTION, WHEEL_RADIUS,
     AERO_CD, AERO_AREA, AIR_DENSITY, AERO_CL, AERO_DOWNFORCE_AREA,
     SUSP_PITCH_STIFFNESS, SUSP_PITCH_DAMPING, SUSP_ROLL_STIFFNESS,
-    SUSP_ROLL_DAMPING, DIFF_OUTER_BIAS, DIFF_MAX_OUTER,
+    SUSP_ROLL_DAMPING,
     ROLLING_RESISTANCE_COEFF, GRAVITY, MAX_DRIVE_FORCE, MAX_BRAKE_FORCE,
     THROTTLE_TAU, BRAKE_TAU, STEERING_TAU, MAX_STEERING_ANGLE, MAX_STEERING_RATE,
     MAX_VELOCITY, INPUT_STEER_RATE, INPUT_STEER_DEADZONE,
@@ -125,10 +123,6 @@ class Car:
         self.input_steer_rate = INPUT_STEER_RATE
         self.input_steer_deadzone = INPUT_STEER_DEADZONE
         self.stability_lat_accel_g = STABILITY_MAX_LAT_ACCEL_G
-        # Differential params
-        self.diff_outer_bias = DIFF_OUTER_BIAS
-        self.diff_max_outer = DIFF_MAX_OUTER
-        
         # ====================================================================
         # Rendering Dimensions (pixels)
         # ====================================================================
@@ -145,8 +139,11 @@ class Car:
     # MAIN UPDATE LOOP
     # ========================================================================
     
-    def update(self, dt, keys, lka_steering=None, lka_controller=None, override_throttle=None, override_brake=None):
-        """Update car state based on user input, LKA steering, and optional actuator overrides."""
+    def update(self, dt, keys, lka_steering=None, override_throttle=None, override_brake=None, force_autosteer=False):
+        """Update car state based on user input, optional assist steering, and optional actuator overrides.
+
+        force_autosteer: when True, ignore manual steering inputs and use lka_steering branch.
+        """
         
         # ====================================================================
         # LONGITUDINAL CONTROL - User Input
@@ -154,25 +151,26 @@ class Car:
         desired_throttle = 0.0
         desired_brake = 0.0
 
-        if override_throttle is not None or override_brake is not None:
-            # Hybrid ASSIST mode can override pedals
-            desired_throttle = override_throttle if override_throttle is not None else 0.0
-            desired_brake = override_brake if override_brake is not None else 0.0
-        else:
-            if keys[pygame.K_w] and not keys[pygame.K_s]:
-                desired_throttle = 1.0
-                desired_brake = 0.0
-            elif keys[pygame.K_s] and not keys[pygame.K_w]:
-                # If moving forward, treat S as brake; if near zero, allow reverse
-                if self.velocity > 0.5:
-                    desired_throttle = 0.0
-                    desired_brake = 1.0
-                else:
-                    desired_throttle = -1.0
-                    desired_brake = 0.0
+        # Read manual inputs first
+        manual_throttle = 0.0
+        manual_brake = 0.0
+        if keys[pygame.K_w] and not keys[pygame.K_s]:
+            manual_throttle = 1.0
+        elif keys[pygame.K_s] and not keys[pygame.K_w]:
+            # If moving forward, treat S as brake; if near zero, allow reverse
+            if self.velocity > 0.5:
+                manual_brake = 1.0
             else:
-                desired_throttle = 0.0
-                desired_brake = 0.0
+                manual_throttle = -1.0
+
+        # Apply overrides: pilot can always brake manually (manual brake wins)
+        if override_throttle is not None or override_brake is not None:
+            desired_throttle = override_throttle if override_throttle is not None else 0.0
+            # Manual brake always takes priority
+            desired_brake = max(manual_brake, override_brake if override_brake is not None else 0.0)
+        else:
+            desired_throttle = manual_throttle
+            desired_brake = manual_brake
 
         # Clamp inputs
         desired_throttle = np.clip(desired_throttle, -1.0, 1.0)
@@ -274,7 +272,7 @@ class Car:
         steer_dir = (1 if manual_left else 0) + (-1 if manual_right else 0)
         target_angle = 0.0
 
-        if manual_steering:
+        if manual_steering and not force_autosteer:
             # Ramp toward target with deadzone to reduce twitchiness
             if steer_dir != 0:
                 target_angle = steer_dir * max(0.0, self.max_steering_angle - self.input_steer_deadzone)
@@ -503,49 +501,6 @@ class Car:
     # 3D RENDERING PRIMITIVES
     # ============================================================
 
-    def draw_3d(self):
-        """Draw car in 3D (uses pixel coordinates for rendering)"""
-        glPushMatrix()
-
-        # Transform to car position and orientation (convert to pixels)
-        x_px = self.get_x_pixels()
-        y_px = self.get_y_pixels()
-        glTranslatef(x_px, y_px, self.height/2)
-        glRotatef(np.degrees(self.theta), 0, 0, 1)
-
-        # Draw car body (simple box)
-        glColor3f(0.2, 0.5, 0.8)  # Blue car
-        self._draw_box(self.length, self.width, self.height)
-
-        # Draw hood (front part, slightly higher)
-        glPushMatrix()
-        glTranslatef(self.length/4, 0, self.height/3)
-        glColor3f(0.3, 0.6, 0.9)
-        self._draw_box(self.length/2, self.width*0.8, self.height/3)
-        glPopMatrix()
-
-        # Draw wheels
-        self._draw_wheels()
-
-        glPopMatrix()
-
-    def draw_wheels_only_3d(self):
-        """Draw ONLY the wheels in 3D for first-person view (car body invisible)"""
-        glPushMatrix()
-
-        # Transform to car position and orientation (convert to pixels)
-        x_px = self.get_x_pixels()
-        y_px = self.get_y_pixels()
-        glTranslatef(x_px, y_px, 0)
-        glRotatef(np.degrees(self.theta), 0, 0, 1)
-
-        # Draw wheels with enhanced details
-        self._draw_wheels_enhanced()
-
-        glPopMatrix()    # ============================================================
-    # 3D RENDERING PRIMITIVES
-    # ============================================================
-
     def _draw_box(self, length, width, height):
         """Draw a simple box centered at origin"""
         l, w, h = length/2, width/2, height/2
@@ -600,10 +555,6 @@ class Car:
             glVertex3f(x, y, -height/2)
             glVertex3f(x, y, height/2)
         glEnd()
-
-    # ============================================================
-    # WHEEL RENDERING
-    # ============================================================
 
     # ============================================================
     # WHEEL RENDERING

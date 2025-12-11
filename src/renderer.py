@@ -2,8 +2,6 @@
 Renderer Module - 3D OpenGL Scene Management
 Part of the 3D Robotics Lab simulation.
 """
-import pygame
-from pygame.locals import *
 from OpenGL.GL import *
 import numpy as np
 from .config import PIXELS_PER_METER
@@ -139,87 +137,7 @@ class Renderer3D:
 
         glPopMatrix()
 
-    def draw_lookahead_point_3d(self, lka):
-        """Draw ALL LKA lane center points and highlight the selected lookahead point"""
-        if not lka.active:
-            return
-
-        glDisable(GL_LIGHTING)
-
-        # Draw ALL lane center points (smaller, semi-transparent yellow)
-        if hasattr(lka, 'lane_center_points') and lka.lane_center_points:
-            glColor3f(1.0, 1.0, 0.5)  # Light yellow
-            for cx, cy, dist in lka.lane_center_points:
-                # Convert meters to pixels
-                px = cx * self.pixels_per_meter
-                py = cy * self.pixels_per_meter
-                # Draw small vertical marker
-                glLineWidth(2)
-                glBegin(GL_LINES)
-                glVertex3f(px, py, 0)
-                glVertex3f(px, py, 15)
-                glEnd()
-
-                # Draw small sphere at top
-                glPushMatrix()
-                glTranslatef(px, py, 15)
-                draw_sphere(4, 4, 4)  # Small sphere
-                glPopMatrix()
-
-        # Draw the SELECTED lookahead point (larger, bright yellow)
-        if hasattr(lka, 'lookahead_point') and lka.lookahead_point:
-            lx, ly = lka.lookahead_point
-            # Convert meters to pixels
-            px = lx * self.pixels_per_meter
-            py = ly * self.pixels_per_meter
-
-            # Draw vertical marker
-            glColor3f(1.0, 1.0, 0.0)  # Bright yellow
-            glLineWidth(4)
-            glBegin(GL_LINES)
-            glVertex3f(px, py, 0)
-            glVertex3f(px, py, 35)
-            glEnd()
-
-            # Draw large sphere at top (this is the actual target)
-            glPushMatrix()
-            glTranslatef(px, py, 35)
-            draw_sphere(8, 6, 6)  # Large sphere for selected point
-            glPopMatrix()
-
-        glEnable(GL_LIGHTING)
-
-    def draw_mpc_trajectory_3d(self, mpc):
-        """Draw MPC predicted trajectory as silver markers"""
-        if not mpc.active:
-            return
-
-        if not hasattr(mpc, 'predicted_trajectory') or not mpc.predicted_trajectory:
-            return
-
-        glDisable(GL_LIGHTING)
-
-        # Draw MPC trajectory points (silver/gray)
-        glColor3f(0.75, 0.75, 0.75)  # Silver color
-
-        for mx, my in mpc.predicted_trajectory:
-            # Convert meters to pixels
-            px = mx * self.pixels_per_meter
-            py = my * self.pixels_per_meter
-            # Draw vertical marker
-            glLineWidth(2)
-            glBegin(GL_LINES)
-            glVertex3f(px, py, 0)
-            glVertex3f(px, py, 20)
-            glEnd()
-
-            # Draw sphere at top
-            glPushMatrix()
-            glTranslatef(px, py, 20)
-            draw_sphere(5, 6, 6)  # Medium-sized sphere
-            glPopMatrix()
-
-        glEnable(GL_LIGHTING)
+    # Removed unused LKA/MPC draw helpers (lookahead points and MPC trajectory)
 
     def draw_hybrid_target_3d(self, hybrid, car):
         """Draw Hybrid Controller's target point and direction vector (yellow)"""

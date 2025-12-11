@@ -3,10 +3,6 @@ Realistic Camera Sensor Module - Lane Detection with Pinhole Model and Homograph
 Part of the 3D Robotics Lab simulation.
 """
 
-import pygame
-from pygame.locals import *
-from OpenGL.GL import *
-from OpenGL.GLU import *
 import numpy as np
 import time
 from .config import CAMERA_FRAME_RATE, CAMERA_LATENCY_MS, CAMERA_NOISE_STD, PIXELS_PER_METER
@@ -196,8 +192,6 @@ class RealisticCameraSensor:
             self.H_inv = np.linalg.inv(H)
         except np.linalg.LinAlgError:
             self.H_inv = None
-        
-        return H, self.H_inv
         
         return H, self.H_inv
     
@@ -437,16 +431,7 @@ class RealisticCameraSensor:
         Detect visible lane boundary points using optimized sampling.
         Returns list of (x, y, angle, confidence) tuples with distance-based confidence.
         """
-        if self.use_uniform_sampling:
-            return self._detect_boundary_uniform(boundary_points, camera_x, camera_y, camera_yaw)
-        else:
-            return self._detect_boundary_all(boundary_points, camera_x, camera_y, camera_yaw)
-    
-    def _detect_boundary_all(self, boundary_points, camera_x, camera_y, camera_yaw):
-        """
-        Original method: detect all visible points with confidence.
-        Returns list of (x, y, angle, confidence) tuples.
-        """
+        return self._detect_boundary_uniform(boundary_points, camera_x, camera_y, camera_yaw)
     
     def _interpolate_boundary(self, boundary_points, interpolation_interval=2.0):
         """Interpolate sparse boundary points to create dense sampling.

@@ -130,12 +130,6 @@ CAMERA_LATENCY_MS = 50  # milliseconds (sensor latency)
 CAMERA_NOISE_STD = 0.05  # meters (spatial noise standard deviation, 5cm)
 
 # ============================================================================
-# DIFFERENTIAL
-# ============================================================================
-DIFF_OUTER_BIAS = 0.08  # proportion of torque bias to outer wheel when steering
-DIFF_MAX_OUTER = 0.65   # max fraction of drive force to outer side
-
-# ============================================================================
 # LKA CONTROLLER TUNING
 # ============================================================================
 # Exponential smoothing factor for lookahead point (0=no smoothing, 1=instant)
