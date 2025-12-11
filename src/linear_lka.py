@@ -1,5 +1,5 @@
 """
-Hybrid Lane Controller (lean)
+Linear LKA Controller
 
 Implements lane-keeping assist using linear state-feedback control from robotics course slides.
 Uses SENSOR DATA ONLY for all state estimation (position, heading, velocity):
@@ -17,7 +17,7 @@ from __future__ import annotations
 import numpy as np
 
 
-class HybridLaneController:
+class LinearLKAController:
     MODE_MANUAL = 0
     MODE_WARNING = 1
     MODE_ASSIST = 2
@@ -44,8 +44,14 @@ class HybridLaneController:
         # Linear control gains from slides (Linear Control III)
         self.zeta = 0.8  # Damping ratio for pole placement
         self.omega_n = 1.2  # Natural frequency
-        self.lookahead_distance = 12.0  # For goal point selection on straights
-        self.lookahead_distance_curve = 5.0  # Reduced lookahead in curves for tighter control
+        
+        # Speed-adaptive lookahead (inspired by MPC horizon concept)
+        # Lookahead = base_time * velocity, clamped to [min, max]
+        self.lookahead_time_straight = 1.0  # seconds for straights
+        self.lookahead_time_curve = 0.3  # seconds for curves (much tighter)
+        self.lookahead_min = 2.0  # minimum lookahead distance (m)
+        self.lookahead_max_straight = 18.0  # maximum lookahead on straights (m)
+        self.lookahead_max_curve = 6.0  # maximum lookahead in curves (reduced)
         
         # Engagement thresholds
         self.assist_offset_deadband = 1.0
@@ -59,15 +65,22 @@ class HybridLaneController:
         self.safe_speed_scale = 0.90  # Apply 10% safety margin to calculated speed
         self.fallback_curve_radius = 200.0  # Default radius if detection fails (gentle curve)
         self.curve_threshold = 500.0  # Radius below which we consider it a curve (meters)
-        self.curve_exit_frames = 30 # Consecutive frames above threshold before exiting curve
+        
+        # Adaptive curve exit logic (instead of hardcoded frames)
+        self.curve_exit_time_min = 1.5  # Minimum time to confirm straight (seconds)
+        self.curve_exit_time_max = 3.5  # Maximum time to confirm straight (seconds)
+        self.curve_exit_radius_factor = 1.5  # Must be 1.5x threshold to start counting
 
         # State
         self.last_omega = 0.0  # Last angular velocity command
         self.center_line_points: list[tuple[float, float]] = []
         self.overspeed_state = False  # Hysteresis state for speed warning
-        self.in_curve = False  # Track if we're currently in a curve
+        self.in_curve_steering = False  # Immediate curve state for steering/lookahead
+        self.in_curve_speed = False  # Hysteresis curve state for speed control
         self.curve_min_safe_speed = float('inf')  # Minimum safe speed for current curve
-        self.straight_frame_count = 0  # Counter for consecutive straight frames
+        self.curve_min_radius = float('inf')  # Tightest radius encountered in curve
+        self.straight_start_time = None  # Timestamp when straight section started
+        self.last_update_time = 0.0  # Track time for adaptive exit
         self.target_point: tuple[float, float] | None = None
         self.target_direction: float | None = None
         self.safe_speed: float | None = None
@@ -107,6 +120,12 @@ class HybridLaneController:
             return None, None, None, {}, False
 
         self._state = self._get_vehicle_state()
+        
+        # Track time for adaptive curve exit
+        import time
+        current_time = time.time()
+        if self.last_update_time == 0.0:
+            self.last_update_time = current_time
 
         left_lane, center_lane, right_lane = self.camera.last_measurement
         current_lane = self.camera.current_lane
@@ -192,8 +211,19 @@ class HybridLaneController:
 
         self.center_line_points = center_line
 
-        # Adjust lookahead based on curve state
-        current_lookahead = self.lookahead_distance_curve if self.in_curve else self.lookahead_distance
+        # Speed-adaptive lookahead (inspired by MPC predictive horizon)
+        # Lookahead = time_horizon * velocity, clamped to safe bounds
+        # This naturally reduces lookahead in tight curves (where speed is low)
+        if self.in_curve_steering:
+            lookahead_time = self.lookahead_time_curve
+            lookahead_max = self.lookahead_max_curve
+        else:
+            lookahead_time = self.lookahead_time_straight
+            lookahead_max = self.lookahead_max_straight
+        
+        # Calculate adaptive lookahead: L = t * v, clamped
+        current_lookahead = lookahead_time * max(abs(current_speed), 1.0)
+        current_lookahead = np.clip(current_lookahead, self.lookahead_min, lookahead_max)
 
         # Find goal point using lookahead (from slides: LTA control II)
         # (x_g, y_g) = point on centerline furthest from lane boundaries
@@ -338,8 +368,10 @@ class HybridLaneController:
     # ------------------------------------------------------------------
     def _update_curve_state(self, lane_left, lane_right):
         """
-        Update curve state with hysteresis.
-        Must be called before steering calculation to use correct lookahead.
+        Update curve state with UNIFIED adaptive time-based exit logic.
+        Both steering (lookahead) and speed control use the same hysteresis:
+          * Tighter curves require longer confirmation time before exiting
+          * Time = f(min_radius) ensures safety and stability
         """
         # Calculate curve radius from visible lane geometry
         curve_radius = self._predict_curve_radius_from_lane(lane_left, lane_right)
@@ -350,31 +382,63 @@ class HybridLaneController:
         
         self._last_curve_radius = curve_radius
         
-        # Curve entry/exit logic with hysteresis
+        # UNIFIED: Adaptive time-based curve exit for both steering and speed
+        # Tighter curves need longer confirmation before exiting
         if curve_radius < self.curve_threshold:
-            # Curve detected (R < 400m)
-            self.straight_frame_count = 0  # Reset exit counter
+            # Curve detected (R < 500m)
+            self.straight_start_time = None  # Reset exit timer
             
-            if not self.in_curve:
-                # ENTERING CURVE
-                self.in_curve = True
-                print(f"\033[93m{'='*70}\033[0m")
-                print(f"\033[93m🟡 ENTERING CURVE! Radius: {curve_radius:.0f}m | Lookahead: {self.lookahead_distance_curve}m\033[0m")
-                print(f"\033[93m{'='*70}\033[0m")
+            if not self.in_curve_steering:
+                # ENTERING CURVE (both steering and speed)
+                self.in_curve_steering = True
+                self.in_curve_speed = True
+                self.curve_min_radius = curve_radius
+            else:
+                # Already in curve - track tightest radius
+                if curve_radius < self.curve_min_radius:
+                    self.curve_min_radius = curve_radius
         else:
-            # Straight section detected (R >= 400m)
-            if self.in_curve:
-                # Still in curve - count consecutive straight frames
-                self.straight_frame_count += 1
+            # Straight section detected (R >= 500m)
+            if self.in_curve_steering or self.in_curve_speed:
+                # Require radius to be significantly higher than threshold
+                # This prevents premature exit on radius fluctuations
+                exit_threshold = self.curve_threshold * self.curve_exit_radius_factor
                 
-                if self.straight_frame_count >= self.curve_exit_frames:
-                    # EXITING CURVE - confirmed straight for enough frames
-                    print(f"\033[92m✓ EXITING CURVE - Back to straight (R={curve_radius:.0f}m, lookahead: {self.lookahead_distance}m)\033[0m")
-                    self.in_curve = False
-                    self.straight_frame_count = 0
+                if curve_radius >= exit_threshold:
+                    # Start counting exit time if not already started
+                    if self.straight_start_time is None:
+                        import time
+                        self.straight_start_time = time.time()
+                    
+                    # Calculate required exit time based on how tight the curve was
+                    # Tighter curves (smaller min_radius) need longer confirmation
+                    # Linear interpolation: tight curves (80m) = 4s, gentle curves (300m) = 2s
+                    if self.curve_min_radius < 80:
+                        required_exit_time = self.curve_exit_time_max
+                    elif self.curve_min_radius > 300:
+                        required_exit_time = self.curve_exit_time_min
+                    else:
+                        # Linear interpolation between min and max
+                        t = (self.curve_min_radius - 80) / (300 - 80)
+                        required_exit_time = self.curve_exit_time_max - t * (self.curve_exit_time_max - self.curve_exit_time_min)
+                    
+                    # Check if enough time has passed
+                    import time
+                    elapsed_time = time.time() - self.straight_start_time
+                    
+                    if elapsed_time >= required_exit_time:
+                        # EXITING CURVE - confirmed straight for required duration
+                        # Both steering and speed exit together
+                        self.in_curve_steering = False
+                        self.in_curve_speed = False
+                        self.straight_start_time = None
+                        self.curve_min_radius = float('inf')
                 else:
-                    # Not enough consecutive straight frames yet
-                    print(f"[CURVE EXIT CHECK] {self.straight_frame_count}/{self.curve_exit_frames} frames, R={curve_radius:.0f}m")
+                    # Radius dropped below exit threshold - reset timer
+                    self.straight_start_time = None
+            else:
+                # Not in curve - ensure timer is reset
+                self.straight_start_time = None
 
     # ------------------------------------------------------------------
     # Speed control (lane geometry based)
@@ -384,9 +448,24 @@ class HybridLaneController:
         Calculate safe speed based on LANE GEOMETRY ahead (not car steering).
         Curve state already updated by _update_curve_state().
         Formula: v_safe = sqrt(a_lat * R) * safety_factor
+        
+        ONLY applies speed limiting when in a curve - straights are unrestricted.
         """
         current_speed = abs(self._state.get("velocity", 0.0))
         
+        # Only apply speed control when in curve
+        # On straights, don't interfere with driver's speed choice
+        if not self.in_curve_speed:
+            # Not in curve - no speed limiting
+            self.safe_speed = float('inf')
+            self.overspeed_state = False
+            return {
+                "safe_speed": float('inf'),
+                "over_speed": False,
+                "brake": 0.0,
+            }
+        
+        # IN CURVE: Calculate safe speed based on geometry
         # Use already-calculated radius from _update_curve_state
         curve_radius = self._last_curve_radius
         
@@ -394,32 +473,17 @@ class HybridLaneController:
         instantaneous_safe_speed = np.sqrt(self.lateral_accel_limit * curve_radius) * self.safe_speed_scale
         instantaneous_safe_speed = min(instantaneous_safe_speed, self.car.max_velocity)
         
-        # Apply curve speed limiting (state already updated by _update_curve_state)
-        if self.in_curve:
-            # In curve - track minimum safe speed
+        # In curve - track minimum safe speed
+        if self.in_curve_speed:
             if not hasattr(self, 'curve_min_safe_speed') or self.curve_min_safe_speed == float('inf'):
                 # First frame in curve
                 self.curve_min_safe_speed = instantaneous_safe_speed
-                print(f"\033[93m   Safe Speed for curve: {instantaneous_safe_speed*3.6:.1f} km/h\033[0m")
             elif instantaneous_safe_speed < self.curve_min_safe_speed:
                 # Tighter section detected
                 self.curve_min_safe_speed = instantaneous_safe_speed
-                print(f"\033[93m⚠️  TIGHTER! New min speed: {instantaneous_safe_speed*3.6:.1f} km/h (R={curve_radius:.0f}m)\033[0m")
             
             # Use minimum safe speed for this curve
             safe_speed = self.curve_min_safe_speed
-        else:
-            # Not in curve (or exiting) - use instantaneous safe speed
-            if hasattr(self, 'curve_min_safe_speed') and self.curve_min_safe_speed != float('inf'):
-                # Just exited curve - reset
-                self.curve_min_safe_speed = float('inf')
-            safe_speed = instantaneous_safe_speed
-        
-        # Continuous debug output showing current radius and speeds
-        if self.in_curve:
-            print(f"[CURVE] R={curve_radius:.0f}m | Current: {current_speed*3.6:.1f} km/h | Min Safe: {self.curve_min_safe_speed*3.6:.1f} km/h")
-        else:
-            print(f"[STRAIGHT] R={curve_radius:.0f}m | Current: {current_speed*3.6:.1f} km/h | Safe: {safe_speed*3.6:.1f} km/h")
         
         self.safe_speed = safe_speed
         
@@ -428,16 +492,10 @@ class HybridLaneController:
             # Not currently warning - trigger when exceeding safe speed
             if current_speed > safe_speed:
                 self.overspeed_state = True
-                print(f"\033[91m{'='*60}\033[0m")
-                print(f"\033[91m⚠️  SPEED WARNING!\033[0m")
-                print(f"\033[91m   Current: {current_speed*3.6:.1f} km/h > Safe: {safe_speed*3.6:.1f} km/h\033[0m")
-                print(f"\033[91m   Curve Radius: {curve_radius:.0f}m\033[0m")
-                print(f"\033[91m{'='*60}\033[0m")
         else:
             # Currently warning - clear only when speed drops 10% below safe speed
             if current_speed <= safe_speed * 0.90:
                 self.overspeed_state = False
-                print(f"\033[92m✓ Speed safe again: {current_speed*3.6:.1f} km/h\033[0m")
         
         over_speed = self.overspeed_state
         
@@ -468,10 +526,6 @@ class HybridLaneController:
         speed_too_high = bool(speed_command and speed_command.get("over_speed", False))
 
         lane_departure = abs(lane_offset) > self.warning_lateral_offset if lane_offset is not None else False
-
-        # Debug: print when speed warning changes
-        if speed_too_high and not self.warnings.get("speed_too_high"):
-            print(f"[SPEED WARNING] Current: {abs(self._state.get('velocity', 0.0)):.1f} m/s, Safe: {speed_command.get('safe_speed', 0):.1f} m/s")
 
         self.warnings["speed_too_high"] = speed_too_high
         self.warnings["lane_departure"] = lane_departure
@@ -694,4 +748,4 @@ class HybridLaneController:
         return best if counts[best] >= self.min_points_for_direction else None
 
 
-__all__ = ["HybridLaneController"]
+__all__ = ["LinearLKAController"]

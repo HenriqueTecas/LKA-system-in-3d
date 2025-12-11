@@ -26,7 +26,7 @@ from .config import *
 from .car import Car
 #from .camera_sensor import CameraSensor
 from .realistic_camera import RealisticCameraSensor
-from .hybrid_controller import HybridLaneController
+from .linear_lka import LinearLKAController
 from .sensors import SensorSuite
 from .track import SaoPauloTrack
 from .renderer import Renderer3D
@@ -147,8 +147,8 @@ def main():
     # Simulated ego sensors (IMU, GNSS, wheel encoder)
     sensors = SensorSuite(car)
 
-    # Create hybrid controller (primary assist)
-    hybrid = HybridLaneController(car, camera, sensors=sensors, track=track)
+    # Create LKA controller
+    lka = LinearLKAController(car, camera, sensors=sensors, track=track)
 
     # Create renderer
     renderer = Renderer3D(WIDTH, HEIGHT)
@@ -170,7 +170,7 @@ def main():
     # PERFORMANCE: Pre-allocate overlay surface (reused every frame)
     overlay_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
     last_detections = ([], [], [])
-    hybrid_warnings = {}
+    lka_warnings = {}
 
     # Main loop -> fixed-timestep physics + rendering
     running = True
@@ -196,35 +196,36 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_1:
-                    hybrid.set_mode(HybridLaneController.MODE_MANUAL)
+                    lka.set_mode(LinearLKAController.MODE_MANUAL)
                 elif event.key == pygame.K_2:
-                    hybrid.set_mode(HybridLaneController.MODE_WARNING)
+                    lka.set_mode(LinearLKAController.MODE_WARNING)
                 elif event.key == pygame.K_3:
-                    hybrid.set_mode(HybridLaneController.MODE_ASSIST)
+                    lka.set_mode(LinearLKAController.MODE_ASSIST)
                 elif event.key == pygame.K_l:
-                    # Save session and generate plots
-                    print("\n[LKA Logger] Saving session data...")
+                    # Save session and generate plots, then close application
+                    print("\n[LOG] Saving session and generating plots...")
                     lka_logger.print_summary()
                     session_file = lka_logger.save_session()
                     
                     # Try to generate plots
                     try:
                         from .lka_logger import LKAVisualizationGenerator
-                        print("[LKA Logger] Generating visualization plots...")
                         viz = LKAVisualizationGenerator(session_file)
                         viz.generate_all_plots(output_dir="plots")
-                        print("[LKA Logger] ✓ Plots saved to plots/ directory")
-                    except ImportError as e:
-                        print(f"[LKA Logger] ! Cannot generate plots (matplotlib not installed): {e}")
+                        print("[LOG] Plots saved successfully.")
+                    except ImportError:
+                        print("[LOG] Could not import visualization generator.")
                     except Exception as e:
-                        print(f"[LKA Logger] ! Error generating plots: {e}")
+                        print(f"[LOG] Error generating plots: {e}")
+                    
+                    # Close application after saving
+                    print("[LOG] Closing application...")
+                    running = False
                 elif event.key == pygame.K_c:
                     if renderer.camera_view_mode == "chase":
                         renderer.camera_view_mode = "realistic"
-                        print("[Camera] Switched to REALISTIC camera view (lane detection POV)")
                     else:
                         renderer.camera_view_mode = "chase"
-                        print("[Camera] Switched to CHASE camera view")
 
         # Capture current key state (will be used during physics steps)
         keys = pygame.key.get_pressed()
@@ -239,28 +240,27 @@ def main():
             last_detections = (left_lane, center_lane, right_lane)
             lane_logger.log_detection(car, camera, left_lane, center_lane, right_lane)
 
-            # Hybrid controller (3 modes)
-            hybrid_steering, hybrid_throttle, hybrid_brake, hybrid_warnings, hybrid_intervening = hybrid.calculate_control(track)
+            # LKA controller (3 modes)
+            lka_steering, lka_throttle, lka_brake, lka_warnings, lka_intervening = lka.calculate_control(track)
             
-            # Log LKA performance metrics (only when hybrid is active)
-            if hybrid.mode != HybridLaneController.MODE_MANUAL:
-                lka_logger.log_frame(current_time, car, hybrid, hybrid_warnings)
+            # Log LKA performance metrics (only when LKA is active)
+            if lka.mode != LinearLKAController.MODE_MANUAL:
+                lka_logger.log_frame(current_time, car, lka, lka_warnings)
 
-            # Update car (hybrid overrides pedals in ASSIST mode)
-            # New behavior: when in ASSIST, override human steering whenever the
-            # controller is intervening OR any lane/speed warnings are active.
+            # Update car (LKA overrides pedals in ASSIST mode)
+            # Override steering when controller is intervening OR any warnings are active
             should_override_steer = False
-            if hybrid.mode == HybridLaneController.MODE_ASSIST:
-                lane_warn = hybrid_warnings.get("lane_departure") or hybrid_warnings.get("time_to_crossing")
-                speed_warn = hybrid_warnings.get("speed_too_high")
-                should_override_steer = hybrid_intervening or lane_warn or speed_warn
+            if lka.mode == LinearLKAController.MODE_ASSIST:
+                lane_warn = lka_warnings.get("lane_departure") or lka_warnings.get("time_to_crossing")
+                speed_warn = lka_warnings.get("speed_too_high")
+                should_override_steer = lka_intervening or lane_warn or speed_warn
 
             car.update(
                 physics_dt,
                 keys,
-                hybrid_steering if should_override_steer else None,
-                override_throttle=hybrid_throttle if hybrid.mode == HybridLaneController.MODE_ASSIST else None,
-                override_brake=hybrid_brake if hybrid.mode == HybridLaneController.MODE_ASSIST else None,
+                lka_steering if should_override_steer else None,
+                override_throttle=lka_throttle if lka.mode == LinearLKAController.MODE_ASSIST else None,
+                override_brake=lka_brake if lka.mode == LinearLKAController.MODE_ASSIST else None,
                 force_autosteer=should_override_steer,
             )
 
@@ -282,8 +282,8 @@ def main():
         # Draw lane markers
         renderer.draw_lane_markers_3d(camera, track)
 
-        # Draw Hybrid target/direction (yellow)
-        renderer.draw_hybrid_target_3d(hybrid, car)
+        # Draw LKA target/direction (yellow)
+        renderer.draw_lka_target_3d(lka, car)
 
         # Draw ONLY wheels (car body invisible for first-person view)
         car.draw_wheels_only_3d()
@@ -303,9 +303,9 @@ def main():
         # PERFORMANCE: Reuse pre-allocated surface (just clear it)
         overlay_surface.fill((0, 0, 0, 0))
 
-        # Render HUD with FPS (pass both controllers)
+        # Render HUD with FPS
         current_fps = clock.get_fps()
-        hud.render(overlay_surface, car, camera, current_fps, renderer.camera_view_mode, hybrid, hybrid_warnings)
+        hud.render(overlay_surface, car, camera, current_fps, renderer.camera_view_mode, lka, lka_warnings)
 
         # Render minimap (pass both controllers)
         minimap_surface = minimap.render(car, camera, lane_measurements=last_detections)
@@ -329,7 +329,7 @@ def main():
         # Draw controls hint
         hint_font = pygame.font.Font(None, 20)
         hint_texts = [
-            "W/S: Accel/Brake | A/D: Steer | 1/2/3: Hybrid modes | C: Toggle camera | L: Log session | ESC: Exit"
+            "W/S: Accel/Brake | A/D: Steer | 1/2/3: LKA modes | C: Toggle camera | L: Log session | ESC: Exit"
         ]
         y = HEIGHT - 30
         for hint in hint_texts:
@@ -381,7 +381,6 @@ def main():
         clock.tick(FPS)
 
     # Cleanup
-    print("\n[LKA Logger] Saving final session data...")
     lka_logger.print_summary()
     lka_logger.save_session()
     

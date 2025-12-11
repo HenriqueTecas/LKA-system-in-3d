@@ -139,17 +139,17 @@ class Renderer3D:
 
     # Removed unused LKA/MPC draw helpers (lookahead points and MPC trajectory)
 
-    def draw_hybrid_target_3d(self, hybrid, car):
-        """Draw Hybrid Controller's target point and direction vector (yellow)"""
-        if hybrid.mode == hybrid.MODE_MANUAL:
+    def draw_lka_target_3d(self, lka, car):
+        """Draw LKA Controller's target point and direction vector (yellow)"""
+        if lka.mode == lka.MODE_MANUAL:
             return
 
         glDisable(GL_LIGHTING)
 
         # Draw center line points (small yellow spheres) when both boundaries visible
-        if hasattr(hybrid, 'center_line_points') and len(hybrid.center_line_points) > 0:
+        if hasattr(lka, 'center_line_points') and len(lka.center_line_points) > 0:
             glColor3f(1.0, 1.0, 0.3)  # Light yellow
-            for cx, cy in hybrid.center_line_points:
+            for cx, cy in lka.center_line_points:
                 px = cx * self.pixels_per_meter
                 py = cy * self.pixels_per_meter
 
@@ -165,8 +165,8 @@ class Renderer3D:
                 glPopMatrix()
 
         # Draw target point if available (BRIGHT YELLOW SPHERE)
-        if hybrid.target_point is not None:
-            tx, ty = hybrid.target_point
+        if lka.target_point is not None:
+            tx, ty = lka.target_point
             px = tx * self.pixels_per_meter
             py = ty * self.pixels_per_meter
 
@@ -183,13 +183,13 @@ class Renderer3D:
             glPopMatrix()
 
         # Draw direction vector from car to target (YELLOW ARROW)
-        if hybrid.target_direction is not None:
+        if lka.target_direction is not None:
             car_x = car.x * self.pixels_per_meter
             car_y = car.y * self.pixels_per_meter
 
             vector_length = 15.0 * self.pixels_per_meter
-            end_x = car_x + vector_length * np.cos(hybrid.target_direction)
-            end_y = car_y + vector_length * np.sin(hybrid.target_direction)
+            end_x = car_x + vector_length * np.cos(lka.target_direction)
+            end_y = car_y + vector_length * np.sin(lka.target_direction)
 
             glColor3f(1.0, 1.0, 0.0)
             glLineWidth(4)
@@ -200,10 +200,10 @@ class Renderer3D:
 
             arrow_size = 20
             arrow_angle = 0.4
-            left_x = end_x - arrow_size * np.cos(hybrid.target_direction - arrow_angle)
-            left_y = end_y - arrow_size * np.sin(hybrid.target_direction - arrow_angle)
-            right_x = end_x - arrow_size * np.cos(hybrid.target_direction + arrow_angle)
-            right_y = end_y - arrow_size * np.sin(hybrid.target_direction + arrow_angle)
+            left_x = end_x - arrow_size * np.cos(lka.target_direction - arrow_angle)
+            left_y = end_y - arrow_size * np.sin(lka.target_direction - arrow_angle)
+            right_x = end_x - arrow_size * np.cos(lka.target_direction + arrow_angle)
+            right_y = end_y - arrow_size * np.sin(lka.target_direction + arrow_angle)
 
             glBegin(GL_TRIANGLES)
             glVertex3f(end_x, end_y, 25)

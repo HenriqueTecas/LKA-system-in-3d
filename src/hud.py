@@ -21,18 +21,18 @@ class HUD:
         self.fps_update_counter = 0
         self.lka_logger = None  # Will be set externally if logging enabled
 
-    def render(self, surface, car, camera, current_fps, camera_view_mode="chase", hybrid_controller=None, hybrid_warnings=None):
+    def render(self, surface, car, camera, current_fps, camera_view_mode="chase", lka_controller=None, lka_warnings=None):
         """Render HUD overlays"""
         # FPS counter
         self._draw_fps(surface, current_fps)
 
-        # Hybrid Controller status (new 3-mode system)
-        if hybrid_controller:
-            self._draw_hybrid_status(surface, hybrid_controller, hybrid_warnings or {})
+        # LKA Controller status (3-mode system)
+        if lka_controller:
+            self._draw_lka_status(surface, lka_controller, lka_warnings or {})
 
         # Enhanced LKA metrics panel (right side)
-        if hybrid_controller and hybrid_controller.mode != hybrid_controller.MODE_MANUAL:
-            self._draw_lka_metrics_panel(surface, car, hybrid_controller)
+        if lka_controller and lka_controller.mode != lka_controller.MODE_MANUAL:
+            self._draw_lka_metrics_panel(surface, car, lka_controller)
 
         # Speed and steering info
         self._draw_telemetry(surface, car)
@@ -73,9 +73,9 @@ class HUD:
 
         surface.blit(text, rect)
 
-    def _draw_hybrid_status(self, surface, hybrid, warnings):
-        """Draw Hybrid Controller status indicator with mode and warnings"""
-        mode_name = hybrid.get_mode_name()
+    def _draw_lka_status(self, surface, lka, warnings):
+        """Draw LKA Controller status indicator with mode and warnings"""
+        mode_name = lka.get_mode_name()
 
         # Color based on mode
         if mode_name == "MANUAL":
@@ -91,7 +91,7 @@ class HUD:
             color = WHITE
             prefix = "[MODE]"
 
-        status_text = f"{prefix} Hybrid (1/2/3)"
+        status_text = f"{prefix} LKA (1/2/3)"
         text = self.font_large.render(status_text, True, color)
         rect = text.get_rect(center=(WIDTH // 2, 30))
 
@@ -135,8 +135,8 @@ class HUD:
                 surface.blit(warning_text, rect)
 
         # Intervention strength if in ASSIST mode
-        if mode_name == "ASSIST" and hasattr(hybrid, 'intervention_strength'):
-            intervention = hybrid.intervention_strength
+        if mode_name == "ASSIST" and hasattr(lka, 'intervention_strength'):
+            intervention = lka.intervention_strength
             if intervention >= 0.5:
                 interv_text = "ASSIST ACTIVE"
                 color_interv = (255, 180, 0)
@@ -216,13 +216,13 @@ class HUD:
 
         surface.blit(text, rect)
 
-    def _draw_lka_metrics_panel(self, surface, car, hybrid_controller):
+    def _draw_lka_metrics_panel(self, surface, car, lka_controller):
         """Draw comprehensive LKA performance metrics panel"""
         # Get metrics from logger if available, otherwise compute directly
         if self.lka_logger:
             metrics = self.lka_logger.get_current_metrics()
         else:
-            metrics = self._compute_metrics_direct(car, hybrid_controller)
+            metrics = self._compute_metrics_direct(car, lka_controller)
         
         # Panel dimensions
         panel_width = 320
