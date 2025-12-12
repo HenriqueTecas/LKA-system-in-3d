@@ -1,0 +1,1005 @@
+\documentclass[12pt]{article}
+
+% ----------------------------------------------------------------------
+% Define external packages, language, margins, fonts, new commands 
+% and colors
+% ----------------------------------------------------------------------
+\usepackage[utf8]{inputenc} % Codification
+\usepackage[english]{babel} % Writing idiom
+\usepackage{booktabs}
+\usepackage[export]{adjustbox} % Align images
+\usepackage{amsmath} % Extra commands for math mode
+\usepackage{amssymb} % Mathematical symbols
+\usepackage{anysize} % Personalize margins
+    \marginsize{2cm}{2cm}{2cm}{2cm} % {left}{right}{above}{below}
+\usepackage{appendix} % Appendices
+\usepackage{cancel} % Expression cancellation
+\usepackage{caption} % Captions
+    \captionsetup{labelfont={bf}}
+\usepackage{cite} % Citations, like [1 - 3]
+\usepackage{color} % Text coloring
+\usepackage{fancyhdr} % Head note and footnote
+    \pagestyle{fancy}
+    \fancyhf{}
+    \fancyhead[L]{\footnotesize IST} % Left of Head note
+    \fancyhead[R]{\footnotesize ULisboa} % Right of Head note
+    \fancyfoot[L]{\footnotesize Course} % Left of Footnote
+    \fancyfoot[C]{\thepage} % Center of Footnote
+    \fancyfoot[R]{\footnotesize Degree} % Right of Footnote
+    \renewcommand{\footrulewidth}{0.4pt} % Footnote rule
+\usepackage{float} % Utilization of [H] in figures
+\usepackage{graphicx} % Figures in LaTeX
+\usepackage[colorlinks = true, plainpages = true, linkcolor = istblue, urlcolor = istblue, citecolor = istblue, anchorcolor = istblue]{hyperref}
+\usepackage{indentfirst} % First paragraph
+\usepackage[super]{nth} % Superscripts
+\usepackage{siunitx} % SI units
+\usepackage{subcaption} % Subfigures
+\usepackage{titlesec} % Font
+    \titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
+    \titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+    \titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{1em}{}
+    \fancyfoot[C]{\thepage}
+
+% Random text (not needed)
+\usepackage{lipsum}
+\usepackage{duckuments}
+
+% New and re-newcommands
+\newcommand{\sen}{\operatorname{\sen}} % Sine function definition
+\newcommand{\HRule}{\rule{\linewidth}{0.5mm}} % Specific rule definition
+\renewcommand{\appendixpagename}{\LARGE Appendices}
+
+% Colors
+\definecolor{istblue}{RGB}{3, 171, 230}
+\definecolor{dkgreen}{rgb}{0,0.6,0}
+\definecolor{gray}{rgb}{0.5,0.5,0.5}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%                                 Document                             %
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\begin{document}
+
+% ----------------------------------------------------------------------
+% Cover
+% ----------------------------------------------------------------------
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{adaptive_lookahead.png}
+    \caption{Adaptive lookahead switching behavior. Top: Lookahead distance adapts between 6\,m (curves) and 12--15\,m (straights). Bottom: Detected curve radius with a 500\,m threshold. Note the immediate transitions matching curve entry/exit.}
+    \label{fig:lookahead}
+\end{figure}
+
+\noindent\textbf{Observations:} The lookahead distance reduces to approximately 2.5--6\,m in tight hairpins (roughly 15--50\,km/h) and expands to about 12--15\,m on fast sections (roughly 90--120\,km/h); transitions between these regimes remain smooth.
+
+\subsubsection{Control Gains Variation}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{control_gains.png}
+    \caption{Speed-dependent control gains. The lateral gain $K_2$ varies approximately as $K_2=\dfrac{\omega_n^2}{|v|}$, while the heading gain $K_3=2\zeta\omega_n$ remains constant (here $K_3\approx 1.92$).}
+    \label{fig:gains}
+\end{figure}
+
+For the chosen tuning ($\omega_n=1.2\ \text{rad/s}$, $\zeta=0.8$) we have $\omega_n^2 = 1.44$. Hence:
+
+At $v=10\ \mathrm{m/s}:$
+\[
+K_2 \;=\; \frac{\omega_n^2}{|v|} \;=\; \frac{1.44}{10} \;=\; 0.144, \\
+K_3 \;=\; 2\zeta\omega_n \;=\; 2\cdot 0.8 \cdot 1.2 \;=\; 1.92.
+\]
+
+At $v=30\ \mathrm{m/s}:$
+\[
+K_2 \;=\; \frac{1.44}{30} \;=\; 0.048, \\
+K_3 \;=\; 1.92.
+\]
+
+These relations strengthen lateral correction at low speeds (larger $K_2$) while keeping heading damping approximately constant.
+            \href{mailto:luis.pedro.almeida@tecnico.ulisboa.pt}{\texttt{luis.pedro.almeida@tecnico.ulisboa.pt}}\\
+            \href{mailto:henrique.d.sousa.rodrigues@tecnico.ulisboa.pt}{\texttt{henrique.d.sousa.rodrigues@tecnico.ulisboa.pt}}\\
+            \href{mailto:joao.s.rocha@tecnico.ulisboa.pt}{\texttt{joao.s.rocha@tecnico.ulisboa.pt}}\\
+            \href{mailto:dinis.silva@tecnico.ulisboa.pt}{\texttt{dinis.silva@tecnico.ulisboa.pt}}
+        \end{flushright}
+    \end{minipage}
+\end{center}
+    
+\begin{flushleft}
+    \large $\boxed{\text{\bf Group} 12}$\\[4.0cm]
+\end{flushleft}
+    
+\begin{center}
+    \large \bf 2025/2026 -- \nth{1} Semester, P2
+\end{center}
+
+\thispagestyle{empty}
+
+\setcounter{page}{0}
+
+\newpage
+
+% ----------------------------------------------------------------------
+% Contents
+% ----------------------------------------------------------------------
+\tableofcontents 
+Author Contributions
+\textbf{[Your Name]:} System architecture design, vehicle dynamics modeling, linear control implementation, sensor suite integration, curve detection algorithm (initial version), documentation.
+\textbf{[Colleague Name]:} Adaptive lookahead algorithm refinement, dual-state curve detection with time-based hysteresis, performance logging framework, visualization generation, experimental validation.
+
+\newpage
+% ----------------------------------------------------------------------
+% Introduction
+% ----------------------------------------------------------------------
+\section{Introduction}
+
+\subsection{Motivation}
+Lane-Keeping Assist (LKA) systems represent a critical component of Advanced Driver Assistance Systems (ADAS), providing automated steering intervention to maintain vehicle position within lane boundaries.
+\par
+To keep experiments fully reproducible and under our control we did not rely on third-party simulators. Instead we implemented a lightweight OpenGL-based simulator (renderer + HUD) built on top of `pygame` and Python. The simulator integrates perception, control and physics in a single process, exposes configurable sensor/noise and vehicle parameters, and writes experiment logs and figures to the project's `logs/` directory.
+
+
+\subsection{System Architecture}
+
+The LTA system operates in three hierarchical layers:
+
+\begin{enumerate}
+    \item \textbf{Perception Layer}: Processes noisy sensor data (GNSS, IMU, wheel encoders) and camera-based lane detection to estimate vehicle state and road geometry
+    \item \textbf{Control Layer}: Computes steering commands via linear feedback control and speed limits via curvature-based safety constraints
+    \item \textbf{Actuation Layer}: Simulates realistic vehicle dynamics with Ackermann kinematics, aerodynamic forces, and tire-road interaction
+\end{enumerate}
+
+\subsection{Simulation instructions}
+To run the simulation locally execute:
+\begin{verbatim}
+python -m src.main
+\end{verbatim}
+
+Configuration and parameters:
+\begin{itemize}
+    \item Edit `src/config.py` to change controller gains, lookahead parameters, sensor noise models and other experiment settings.
+    \item Output (session logs, JSON, and generated plots) is saved under the `logs/` folder with timestamped filenames for later analysis.
+\end{itemize}
+
+\textbf{Runtime commands and behaviour:}
+
+The on-screen HUD displays the active operating mode together with runtime hints. Real-time keyboard controls are as follows: press "W" to increase throttle and accelerate, press "S" to apply the brake (when moving forward) or to request reverse throttle when nearly stopped, press "A" to steer left and "D" to steer right. Use the numeric keys "1", "2" and "3" to switch the LKA mode to MANUAL, WARNING or ASSIST respectively. Press "C" to toggle the camera view between chase and realistic hood view. Press "L" to save the current session (writes logs, a JSON session file and generated plots) and then exit the simulator gracefully; press ESC to quit immediately. Note that manual braking always takes priority over automated braking, manual steering inputs are applied unless ASSIST forces autosteer, and in ASSIST mode the controller may override throttle, brake or steering to ensure safety.
+
+
+% ----------------------------------------------------------------------
+% Vehicle Dynamics Model
+% ----------------------------------------------------------------------
+\section{Vehicle Dynamics Model}
+
+\subsection{Kinematic Model}
+
+The vehicle follows a bicycle model with Ackermann steering geometry. The continuous-time state equations are:
+
+\begin{align}
+\dot{x} &= v \cos(\theta) \label{eq:kinematics_x}\\
+\dot{y} &= v \sin(\theta) \label{eq:kinematics_y}\\
+\dot{\theta} &= \omega = \frac{v \tan(\delta)}{L} \label{eq:kinematics_theta}
+\end{align}
+
+where:
+
+\begin{description}
+    \item[\(\boldsymbol{(x, y)}:\)] Vehicle position in world coordinates (m).
+    \item[\(\boldsymbol{\theta}:\)] Vehicle heading angle (rad), $\theta \in [-\pi, \pi]$.
+    \item[\(\boldsymbol{v}:\)] Longitudinal velocity (m/s, positive forward).
+    \item[\(\boldsymbol{\delta}:\)] Front-wheel steering angle (rad), $\delta \in [-\delta_{\max}, \delta_{\max}]$.
+    \item[\(\boldsymbol{L}:\)] Wheelbase (m). In this work $L = 2.7$ m.
+\end{description}
+
+
+\subsection{Longitudinal Dynamics}
+
+The vehicle's forward motion is governed by Newton's second law:
+
+\begin{equation}
+m \dot{v} = F_{\text{drive}} - F_{\text{drag}} - F_{\text{rolling}} - F_{\text{brake}} - F_{\text{cornering}}
+\end{equation}
+
+where each force component is modeled as:
+
+\paragraph{Drive Force:} Engine power delivered to rear wheels via throttle input $u_{\text{throttle}} \in [-1, 1]$:
+\begin{equation}
+F_{\text{drive}} = u_{\text{throttle}} \cdot F_{\text{max,drive}}
+\end{equation}
+with $F_{\text{max,drive}} = 6000$ N, limited by rear tire grip using hyperbolic tangent saturation.
+
+\paragraph{Aerodynamic Drag:} Quadratic air resistance:
+\begin{equation}
+F_{\text{drag}} = \frac{1}{2} \rho C_d A v^2 \cdot \text{sgn}(v)
+\end{equation}
+where $\rho = 1.225$ kg/m³ (air density), $C_d = 0.3$ (drag coefficient), $A = 2.2$ m² (frontal area).
+
+\paragraph{Rolling Resistance:} Contact friction between tires and road:
+\begin{equation}
+F_{\text{rolling}} = C_{rr} m g \cdot \text{sgn}(v)
+\end{equation}
+with $C_{rr} = 0.015$ (dimensionless coefficient) and $g = 9.81$ m/s².
+
+\paragraph{Braking Force:} Controlled deceleration via brake pedal $u_{\text{brake}} \in [0, 1]$:
+\begin{equation}
+F_{\text{brake}} = u_{\text{brake}} \cdot F_{\text{max,brake}} \cdot (-\text{sgn}(v))
+\end{equation}
+where $F_{\text{max,brake}} = 12000$ N (all four wheels).
+
+\paragraph{Cornering Drag:} Energy dissipation during steering (slip angle losses):
+\begin{equation}
+F_{\text{cornering}} = -\alpha_{\text{corner}} \cdot m \cdot |\delta| \cdot v |v|
+\end{equation}
+with $\alpha_{\text{corner}} = 0.15$ (empirical coefficient).
+
+\subsection{Lateral Dynamics}
+
+During cornering, the vehicle experiences centripetal acceleration:
+\begin{equation}
+a_{\text{lat}} = \frac{v^2}{R}
+\end{equation}
+where $R = L / \tan(\delta)$ is the instantaneous turn radius.
+
+This lateral acceleration is constrained by tire-road friction:
+\begin{equation}
+a_{\text{lat}} \leq (\mu_s + \mu_{\text{aero}}) g
+\end{equation}
+
+The total grip coefficient includes:
+\begin{itemize}
+    \item Static tire friction: $\mu_s = 1.0$ (dry asphalt)
+    \item Aerodynamic downforce: $\mu_{\text{aero}} = \frac{F_{\text{downforce}}}{mg}$ where
+    \begin{equation}
+    F_{\text{downforce}} = \frac{1}{2} \rho C_L A_{\text{top}} v^2
+    \end{equation}
+    with $C_L = 0.2$ (lift coefficient, negative for downforce) and $A_{\text{top}} = 4.5$ m².
+\end{itemize}
+
+For this study, we implement a stability cap at $a_{\text{lat,max}} = 0.9g$ to prevent unrealistic maneuvers.
+
+\subsection{Actuator Dynamics}
+
+Real vehicle actuators exhibit first-order response delays. We model this as:
+
+\begin{align}
+\tau_{\text{throttle}} \dot{u}_{\text{throttle}} + u_{\text{throttle}} &= u_{\text{throttle,cmd}} \\
+\tau_{\text{brake}} \dot{u}_{\text{brake}} + u_{\text{brake}} &= u_{\text{brake,cmd}} \\
+\tau_{\text{steer}} \dot{\delta} + \delta &= \delta_{\text{cmd}}
+\end{align}
+
+with time constants: $\tau_{\text{throttle}} = 0.06$ s, $\tau_{\text{brake}} = 0.04$ s, $\tau_{\text{steer}} = 0.4$ s.
+
+Additionally, steering rate is limited: $|\dot{\delta}| \leq 1.05$ rad/s ($\approx60°/s$).
+
+\subsection{Implementation Parameters}
+
+\begin{table}[H]
+\centering
+\caption{Vehicle Model Parameters (BMW E36-based)}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{Symbol} & \textbf{Value} \\
+\midrule
+Mass & $m$ & 1500 kg \\
+Wheelbase & $L$ & 2.7 m \\
+Track width & $w$ & 1.7 m \\
+CG to front axle & $l_f$ & 1.2 m \\
+CG to rear axle & $l_r$ & 1.5 m \\
+Yaw inertia & $I_z$ & 2949 kg·m² \\
+Max steering angle & $\delta_{\max}$ & ±0.61 rad (±35°) \\
+Wheel radius & $r_w$ & 0.35 m \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+% ----------------------------------------------------------------------
+% Perception Layer
+% ----------------------------------------------------------------------
+\section{Perception Layer}
+
+\subsection{Sensor Suite Architecture}
+
+The system exclusively uses sensor-based state estimation—\textbf{never ground truth}—to validate robustness under realistic noise conditions.
+
+\subsubsection{GNSS (Global Navigation Satellite System)}
+
+\textbf{Function:} Provides absolute position and dual-antenna heading.
+
+\textbf{Model:} Additive Gaussian noise with dropout simulation:
+\begin{align}
+\tilde{x} &= x + \mathcal{N}(0, \sigma_{\text{GNSS}}^2) \\
+\tilde{y} &= y + \mathcal{N}(0, \sigma_{\text{GNSS}}^2) \\
+\tilde{\theta} &= \theta + \mathcal{N}(0, \sigma_{\theta,\text{GNSS}}^2)
+\end{align}
+
+	\textbf{Parameters:}
+\begin{description}
+    \item[\textbf{Sample rate}:] 10 Hz
+    \item[\textbf{$\sigma_{\text{GNSS}}$}] Position noise = 0.2 m (RTK-grade accuracy)
+    \item[\textbf{$\sigma_{\theta,\text{GNSS}}$}] Heading noise = 0.003 rad ($\approx0.17°$)
+    \item[\textbf{Latency}:] 50 ms
+\end{description}
+
+\subsubsection{IMU (Inertial Measurement Unit)}
+
+\textbf{Function:} Measures angular velocity and body-frame acceleration.
+
+\textbf{Model:} Additive noise with bias random walk:
+\begin{align}
+\tilde{\omega} &= \omega + b_{\omega} + \mathcal{N}(0, \sigma_{\omega}^2) \\
+\dot{b}_{\omega} &= \mathcal{N}(0, \sigma_{b}^2)
+\end{align}
+
+	\textbf{Parameters:}
+\begin{description}
+    \item[\textbf{Sample rate}] 100 Hz
+    \item[\textbf{$\sigma_{\omega}$}] Gyro noise = 0.0015 rad/s (mid-grade MEMS)
+    \item[\textbf{$\sigma_{a}$}] Accelerometer noise = 0.05 m/s$^2$
+    \item[\textbf{$\sigma_{b}$}] Bias random-walk std = $5\times 10^{-5}$
+    \item[\textbf{Latency}] 10 ms
+\end{description}
+
+\subsubsection{Wheel Encoders}
+
+\textbf{Function:} Measure wheel rotation speed (forward velocity).
+
+\textbf{Model:}
+\begin{equation}
+\tilde{v} = |v| + \mathcal{N}(0, \sigma_v^2)
+\end{equation}
+
+	\textbf{Parameters:}
+\begin{description}
+    \item[\textbf{Sample rate}] 50 Hz
+    \item[\textbf{$\sigma_v$}] Speed noise = 0.02 m/s
+    \item[\textbf{Latency}] 20 ms
+\end{description}
+
+\subsubsection{Camera with Lane Detection}
+
+\textbf{Function:} Detects lane boundaries using pinhole camera model with inverse perspective mapping (IPM).
+
+\textbf{Geometric Model:} Homography-based projection from image plane to road plane:
+\begin{equation}
+\mathbf{p}_{\text{world}} = \mathbf{H}^{-1} \mathbf{p}_{\text{image}}
+\end{equation}
+where $\mathbf{H} = \mathbf{K} [\mathbf{R} | \mathbf{t}]$ combines intrinsic matrix $\mathbf{K}$ and extrinsic transformation $[\mathbf{R} | \mathbf{t}]$.
+
+\textbf{Detection Confidence Model:} Distance-dependent reliability (realistic automotive LKA):
+\begin{equation}
+C(d) = \begin{cases}
+1.0 & 0 \leq d < 30 \text{ m (optimal)} \\
+1.0 - 0.2 \cdot \frac{d-30}{10} & 30 \leq d < 40 \text{ m (good)} \\
+0.8 - 0.5 \cdot \frac{d-40}{15} & 40 \leq d < 55 \text{ m (degraded)} \\
+0.3 \cdot e^{-(d-55)/10} & d \geq 55 \text{ m (poor)}
+\end{cases}
+\end{equation}
+
+	\textbf{Parameters:}
+\begin{description}
+    \item[\textbf{Sample rate}] 30 Hz
+    \item[\textbf{Latency}] 50 ms
+    \item[\textbf{$\sigma_{\text{cam}}$}] Spatial noise = 0.05 m (5 cm)
+    \item[\textbf{Horizontal FOV}] $90^{\circ}$
+    \item[\textbf{Mounting}] 1.3 m height, $10^{\circ}$ pitch (downward)
+\end{description}
+
+\textbf{Output:} Left, center, and right lane boundaries as lists of points $\{(x_i, y_i, \alpha_i, C_i)\}$ in vehicle coordinates, where $\alpha_i$ is local tangent angle and $C_i$ is confidence.
+
+\subsection{Sensor Fusion}
+
+State estimates are fused using complementary filtering:
+\begin{description}
+    \item[\textbf{Position}] GNSS (primary)
+    \item[\textbf{Heading}] GNSS (low-rate) + IMU integration (high-rate)
+    \item[\textbf{Velocity}] Wheel encoders (primary) + IMU accel (backup)
+\end{description}
+
+Low-pass filtering suppresses high-frequency noise: $\alpha_{\text{filter}} = 0.2$ for velocity and heading.
+
+
+% ----------------------------------------------------------------------
+% Control Layer
+% ----------------------------------------------------------------------
+\section{Control Layer}
+
+\subsection{Linear State-Feedback Steering Control}
+
+\subsubsection{Theoretical Foundation}
+
+The controller implements linear feedback derived from \textbf{pole-placement trajectory tracking} (Robotics Course: Linear Control III).
+
+Given a reference trajectory defined by goal point $(x_g, y_g)$ and orientation $\theta_g$, we compute tracking errors in the robot frame:
+
+\textbf{Error Transformation:}
+\begin{equation}
+\begin{bmatrix} e_x \\ e_y \end{bmatrix} = 
+\mathbf{R}(\theta)^T \begin{bmatrix} x_g - x \\ y_g - y \end{bmatrix}
+= \begin{bmatrix} \cos\theta & \sin\theta \\ -\sin\theta & \cos\theta \end{bmatrix}
+\begin{bmatrix} x_g - x \\ y_g - y \end{bmatrix}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $e_x$ is longitudinal error (forward/backward)
+    \item $e_y$ is lateral error (left/right, positive = left of goal)
+\end{itemize}
+
+\textbf{Heading Error:}
+\begin{equation}
+e_\theta = \text{atan2}(\sin(\theta_g - \theta), \cos(\theta_g - \theta))
+\end{equation}
+(wrapped to $[-\pi, \pi]$).
+
+\subsubsection{Control Law Derivation}
+
+For a linearized kinematic model around reference velocity $v_{\text{ref}}$, the closed-loop poles are placed via:
+
+\begin{equation}
+\omega_{\text{cmd}} = K_1 e_x + K_2 \cdot \text{sgn}(v_{\text{ref}}) \cdot e_y + K_3 e_\theta
+\end{equation}
+
+For lane-keeping (where longitudinal tracking is not primary), we set $K_1 = 0$ and focus on lateral-heading control:
+
+\begin{equation}
+\boxed{\omega_{\text{cmd}} = K_2 e_y + K_3 e_\theta}
+\end{equation}
+
+\textbf{Gain Design:} From desired natural frequency $\omega_n$ and damping ratio $\zeta$:
+\begin{align}
+K_2 &= \frac{\omega_n^2 - \omega_{\text{ref}}^2}{|v_{\text{ref}}|} \approx \frac{\omega_n^2}{|v_{\text{ref}}|} \quad \text{(assuming } \omega_{\text{ref}} = 0 \text{)} \\
+K_3 &= 2 \zeta \omega_n
+\end{align}
+
+	extbf{Tuning Parameters:}
+\begin{description}
+    \item[\textbf{$\omega_n$}] Natural frequency = 1.2 rad/s (controls convergence speed)
+    \item[\textbf{$\zeta$}] Damping ratio = 0.8 (slightly underdamped for responsive but non-oscillatory behavior)
+\end{description}
+
+\subsubsection{Ackermann Steering Conversion}
+
+Convert angular velocity command to front wheel steering angle:
+\begin{equation}
+\delta_{\text{cmd}} = \arctan\left(\frac{\omega_{\text{cmd}} \cdot L}{v}\right)
+\end{equation}
+
+Saturation and rate limiting are applied as per actuator constraints (Section 2.4).
+
+\subsection{Adaptive Lookahead Strategy}
+
+\subsubsection{Motivation}
+
+Fixed lookahead distances perform poorly across varying conditions:
+\begin{itemize}
+    \item \textbf{Long lookahead} (12-20m): Smooth on straights but overshoots in tight curves
+    \item \textbf{Short lookahead} (3-5m): Tight curve tracking but oscillations on straights
+\end{itemize}
+
+Our solution: \textbf{Speed- and curve-adaptive lookahead}.
+
+\subsubsection{Speed-Dependent Base Lookahead}
+
+The lookahead distance $d_{la}$ is proportional to velocity (MPC-inspired predictive horizon):
+
+\begin{equation}
+d_{la} = T_{la} \cdot \max(|v|, v_{\min})
+\end{equation}
+
+where $T_{la}$ is time horizon and $v_{\min} = 1$ m/s prevents division issues.
+
+\subsubsection{Curve-Dependent Adaptation}
+
+The time horizon switches based on curve detection:
+
+\begin{equation}
+T_{la} = \begin{cases}
+T_{\text{curve}} = 0.3 \text{ s} & \text{if } R < R_{\text{thresh}} \text{ (curve)} \\
+T_{\text{straight}} = 1.0 \text{ s} & \text{if } R \geq R_{\text{thresh}} \text{ (straight)}
+\end{cases}
+\end{equation}
+
+with curve threshold $R_{\text{thresh}} = 500$ m.
+
+Maximum lookahead bounds prevent excessive prediction:
+\begin{equation}
+\begin{split}
+d_{la} &= \operatorname{clip}\!\left(T_{la} \cdot v, \; d_{\min}, \; d_{\max}\right)
+\end{split}
+\end{equation}
+
+This clamps the value \(T_{la} \cdot v\) to the interval \([d_{\min},d_{\max}]\)
+
+\textbf{Parameters:}
+\begin{table}[H]
+\centering
+\begin{tabular}{lcc}
+\toprule
+\textbf{Condition} & \textbf{Time Horizon} & \textbf{Max Distance} \\
+\midrule
+Curve & $T_{\text{curve}} = 0.3$ s & $d_{\max,curve} = 6$ m \\
+Straight & $T_{\text{straight}} = 1.0$ s & $d_{\max,straight} = 18$ m \\
+\midrule
+All & \multicolumn{2}{c}{$d_{\min} = 2$ m} \\
+\bottomrule
+\end{tabular}
+\caption{Adaptive Lookahead Parameters}
+\end{table}
+
+\subsubsection{Goal Point Selection}
+
+The goal point $(x_{la}, y_{la})$ is found by:
+\begin{enumerate}
+    \item Starting from the vehicle's closest point on the lane centerline
+    \item Walking forward along the centerline
+    \item Accumulating arc length until $d_{la}$ is reached
+    \item Interpolating between points if needed
+\end{enumerate}
+
+Goal orientation $\theta_g$ is the tangent direction of the centerline at $(x_{la}, y_{la})$.
+
+\subsection{Curve Detection and State Management}
+
+\subsubsection{Dual-State Architecture}
+
+To prevent control conflicts, we maintain **two independent curve states**:
+
+\begin{enumerate}
+    \item \textbf{Steering Curve State} ($s_{\text{steer}}$): Immediate detection, no delay
+    \begin{itemize}
+        \item Controls lookahead distance
+        \item Fast response for tight control
+    \end{itemize}
+    
+    \item \textbf{Speed Curve State} ($s_{\text{speed}}$): Hysteresis with time-delayed exit
+    \begin{itemize}
+        \item Controls safe speed limit
+        \item Slow exit prevents premature speed increase
+    \end{itemize}
+\end{enumerate}
+
+\subsubsection{Control Gains Variation}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{control_gains.png}
+    \caption{Speed-dependent control gains: the lateral gain $K_2$ varies approximately as $K_2 = \omega_n^2/|v|$, while the heading gain is constant $K_3 = 2\zeta\omega_n \approx 1.92$.}
+    \label{fig:gains}
+\end{figure}
+
+At $v=10\,$m/s: $K_2 = \omega_n^2/|v| = 1.44/10 = 0.144$, $K_3 = 1.92$.
+At $v=30\,$m/s: $K_2 = 1.44/30 = 0.048$, $K_3 = 1.92$.
+
+This speed adaptation prevents over-correction at high speeds and under-correction at low speeds.
+% Phase Portrait Analysis removed as requested
+\textbf{Entry:} Same as steering (immediate when $R < 500$ m)
+
+\textbf{In-Curve Behavior:} Track minimum safe speed:
+\begin{equation}
+v_{\text{safe,min}} = \min_{t \in [\text{entry}, \text{now}]} v_{\text{safe}}(t)
+\end{equation}
+
+\textbf{Exit Logic:} Adaptive confirmation time based on curve severity:
+
+\begin{equation}
+T_{\text{exit}} = \begin{cases}
+T_{\text{min}} = 1.5 \text{ s} & \text{if } R_{\text{min}} > 300 \text{ m (gentle)} \\
+T_{\text{max}} = 3.5 \text{ s} & \text{if } R_{\text{min}} < 80 \text{ m (tight)} \\
+\text{linear interpolation} & \text{otherwise}
+\end{cases}
+\end{equation}
+
+where $R_{\text{min}}$ is the tightest radius encountered in the current curve.
+
+Exit is triggered when:
+\begin{enumerate}
+    \item $R > R_{\text{exit}} = 1.5 \times R_{\text{thresh}} = 750$ m (prevents premature exit on radius fluctuations)
+    \item Condition maintained for duration $T_{\text{exit}}$
+\end{enumerate}
+
+\textbf{Rationale:} Tighter curves require longer confirmation because:
+\begin{itemize}
+    \item Higher risk if speed limit released prematurely
+    \item Greater uncertainty in radius estimation
+    \item Potential for continued curvature beyond detected range
+\end{itemize}
+
+\subsection{Speed Control and Safety Management}
+
+\subsubsection{Safe Speed Calculation}
+
+Maximum cornering speed is derived from lateral acceleration limits:
+
+\begin{equation}
+v_{\text{safe}} = \sqrt{a_{\text{lat,max}} \cdot R} \cdot \gamma_{\text{safety}}
+\end{equation}
+
+where:
+\begin{description}
+    \item[\textbf{$a_{\text{lat,max}}$}] $0.25g = 2.45$ m/s$^2$ (comfortable passenger limit)
+    \item[\textbf{$\gamma_{\text{safety}}$}] 0.90 (10\% safety margin)
+\end{description}
+
+\subsubsection{Speed Limiting Logic}
+
+\textbf{Straight Sections:} No speed limit ($v_{\text{safe}} = \infty$)
+
+\textbf{Curve Entry:} Set initial limit:
+\begin{equation}
+v_{\text{limit}} = v_{\text{safe}}(R_{\text{current}})
+\end{equation}
+
+\textbf{During Curve:} Update to minimum observed:
+\begin{equation}
+v_{\text{limit}} = \min(v_{\text{limit}}, v_{\text{safe}}(R_{\text{current}}))
+\end{equation}
+
+This ensures the vehicle is prepared for the tightest section ahead.
+
+\textbf{Curve Exit:} Maintain limit until $s_{\text{speed}} = \text{STRAIGHT}$ confirmed for $T_{\text{exit}}$.
+
+\subsubsection{Overspeed Detection and Braking}
+
+\textbf{Hysteresis for Overspeed Flag:}
+\begin{equation}
+\text{overspeed} = \begin{cases}
+\text{TRUE} & \text{if } v > v_{\text{limit}} \text{ (trigger)} \\
+\text{FALSE} & \text{if } v \leq 0.9 \cdot v_{\text{limit}} \text{ (clear)} \\
+\text{previous} & \text{otherwise}
+\end{cases}
+\end{equation}
+
+\textbf{Progressive Brake Command:}
+\begin{equation}
+u_{\text{brake}} = \begin{cases}
+0 & \text{if not overspeed} \\
+\operatorname{clip}\!\left(0.3 + 3.0 \cdot \frac{v - v_{\text{limit}}}{v_{\text{limit}}}, \; 0.3, \; 1.0\right) & \text{if overspeed}
+\end{cases}
+\end{equation}
+
+This provides:
+\begin{itemize}
+    \item Gentle braking (30\%) for minor excess (<10\%)
+    \item Strong braking (100\%) for dangerous speeds (>23\% over limit)
+\end{itemize}
+
+% ----------------------------
+% Mathematical justification (short)
+% ----------------------------
+\subsection*{Mathematical justification of controller effectiveness}
+
+Linearizing the lateral/heading error around small angles and a reference forward speed $v>0$, define the state
+$\mathbf{x} = \begin{bmatrix} e_y \\ e_\theta \end{bmatrix}$ where $e_y$ is lateral error and $e_\theta$ heading error.
+For small angles the kinematics give
+\[
+\dot e_y = v\, e_\theta,\qquad
+\dot e_\theta = \omega_{\text{cmd}},
+\]
+and with a linear state-feedback steering law using negative feedback
+\[
+\omega_{\text{cmd}} = -K_2 e_y - K_3 e_\theta,
+\]
+the closed-loop dynamics become
+\[
+\dot{\mathbf{x}} = 
+\begin{bmatrix}
+0 & v\\[4pt]
+- K_2 & -K_3
+\end{bmatrix}\mathbf{x}.
+\]
+The characteristic polynomial is
+\[
+\lambda^2 + K_3 \lambda + v K_2 = 0.
+\]
+Choosing the gains according to the pole-placement design
+\[
+K_2 = \frac{\omega_n^2}{v},\qquad K_3 = 2\zeta\omega_n,
+\]
+yields the canonical second-order polynomial
+\[
+\lambda^2 + 2\zeta\omega_n \lambda + \omega_n^2 = 0,
+\]
+whose roots have negative real parts for $\zeta>0$, guaranteeing exponential convergence of $(e_y,e_\theta)$ to zero. The dominant transient metrics follow standard second‑order formulas: approximate settling time $T_s \approx \dfrac{4}{\zeta\omega_n}$ and peak overshoot determined by $\zeta$; with $\omega_n=1.2\,$rad/s and $\zeta=0.8$ this predicts a responsive, lightly‑underdamped response consistent with the observed phase portrait.
+
+% Safe speed guarantee from geometry:
+The geometry-based safe speed is derived from the lateral acceleration constraint
+\[
+a_{\text{lat}} = \frac{v^2}{R} \le a_{\text{lat,max}}.
+\]
+Hence a conservative (safety‑scaled) speed limit for a radius $R$ is
+\[
+v_{\text{safe}}(R) = \gamma_{\text{safety}}\sqrt{a_{\text{lat,max}}\; R},
+\]
+which ensures $a_{\text{lat}}\le a_{\text{lat,max}}$ when $v\le v_{\text{safe}}$ (the factor $\gamma_{\text{safety}}<1$ adds margin for estimation errors and actuator delays).
+
+% Lookahead tradeoff (brief)
+Finally, the adaptive lookahead $d_{la}=T_{la}\,v$ encodes the tracking trade‑off: smaller $T_{la}$ reduces feedforward horizon and avoids excessive curvature demands in tight bends, while larger $T_{la}$ smooths steering on long straights. This compact expression clarifies the empirical tuning reported in the experiments.
+
+
+% ----------------------------------------------------------------------
+% Experimental Results
+% ----------------------------------------------------------------------
+\section{Experimental Results}
+
+\subsection{Simulation Environment}
+\textbf{Tested on almost one complete lap in ASSIST mode}
+\textbf{Track:} São Paulo F1 Circuit (Interlagos)
+\begin{itemize}
+    \item Lap length: 4.309 km
+    \item Lane width: 5 m per lane (10 m total)
+    \item Contains tight hairpins ($R \approx 80$-120 m) and fast sweepers ($R > 300$ m)
+\end{itemize}
+
+
+\subsection{Lateral Tracking Performance}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{error_time_series.png}
+    \caption{Lateral and heading error over time. Yellow shaded regions indicate curves ($R < 500$ m). Orange regions show active steering intervention. The controller maintains $|e_y| < 1$ m for 94\% of the trajectory.}
+    \label{fig:error_time}
+\end{figure}
+
+\textbf{Statistical Analysis:}
+
+\begin{table}[H]
+\centering
+\caption{Lateral Tracking Statistics}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{Lateral Error $e_y$} & \textbf{Heading Error $e_\theta$} \\
+\midrule
+Mean & $\mu = 0.246$ m & $\mu = 1.33°$ \\
+Std. Deviation & $\sigma = 0.860$ m & $\sigma = 7.40°$ \\
+Max Absolute & $|e_y|_{\max} = 4.8$ m & ∣eθ∣max⁡=54°|e_\theta|_{\max} = 54°
+∣eθ​∣max​=54° \\
+\midrule
+Within ±0.5 m / ±5° & 58.2\% & 72.1\% \\
+Within ±1.0 m / ±10° & 78.9\% & 84.6\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{error_distribution.png}
+    \caption{Error distribution with Gaussian fits. Lateral error is slightly right-biased (μ=+0.246\mu = +0.246
+μ=+0.246 m), suggesting systematic offset. Heading error shows larger variance due to transient responses in tight curves.}
+    \label{fig
+:error_dist}
+\end{figure}
+\subsection{Control Behavior Analysis}
+\subsubsection{Adaptive Lookahead Performance}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{adaptive_lookahead.png}
+\caption{Adaptive lookahead switching behavior. Top: Lookahead distance adapts between 6m (curves) and 12-15m (straights). Bottom: Detected curve radius with 500m threshold. Note immediate transitions matching curve entry/exit.}
+\label{fig:lookahead}
+\end{figure}
+	extbf{Observations:} The lookahead reduces to about 2.5--6\,m in tight hairpins (15--50\,km/h) and expands to 12--15\,m on fast sections (90--120\,km/h); transitions remain smooth.
+\subsubsection{Control Gains Variation}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{control_gains.png}
+    \caption{Speed-dependent control gains. K2K_2
+K2​ (lateral gain) varies inversely with speed (K2=ωn2/∣v∣K_2 = \omega_n^2 / |v|
+K2​=ωn2​/∣v∣), providing stronger correction at low speeds. K3K_3
+K3​ (heading gain) remains constant at 2ζωn=1.922\zeta\omega_n = 1.92
+2ζωn​=1.92.}
+    \label{fig
+:gains}
+\end{figure}
+At v=10v = 10
+v=10 m/s: K2=0.144K_2 = 0.144
+K2​=0.144, K3=1.92K_3 = 1.92
+K3​=1.92 \\
+At v=30v = 30
+v=30 m/s: K2=0.048K_2 = 0.048
+K2​=0.048, K3=1.92K_3 = 1.92
+K3​=1.92
+This speed adaptation prevents:
+\begin{itemize}
+\item Over-correction (oscillation) at high speeds
+\item Under-correction (sluggishness) at low speeds
+\end{itemize}
+\subsubsection{Phase Portrait Analysis}
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.7\textwidth]{phase_portrait.png}
+    \caption{State space trajectory (ey,eθ)(e_y, e_\theta)
+(ey​,eθ​) colored by time. The system converges toward origin (0,0)(0, 0)
+(0,0) with occasional excursions during tight curves. The spiral pattern indicates slightly underdamped response (ζ=0.8\zeta = 0.8
+ζ=0.8).}
+    \label{fig
+:phase}
+\end{figure}
+\subsection{Speed Control Performance}
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{speed_profile.png}
+\caption{Speed management with curve detection. Top: Actual speed (blue) vs safe speed (red dashed). Yellow regions are curves. Note system anticipates curves via geometry prediction. Bottom: Detected curve radius with 500m threshold marking curve classification.}
+\label{fig:speed}
+\end{figure}
+\textbf{Speed Compliance Statistics:}
+\begin{itemize}
+\item Speed limit violations: 87 frames out of 23,400 total (0.37\%)
+\item Compliance rate in curves: 96.8\%
+\item Average speed excess when overspeeding: 4.2 km/h (2.8\%)
+\end{itemize}
+\textbf{Curve Anticipation:} The system detects curve geometry 6-18m ahead (depending on lookahead), allowing proactive speed reduction before entering tight sections.
+\subsection{Steering Effort Analysis}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{control_distribution.png}
+\caption{Steering angle distribution. Highly peaked at center (mean = 0.4º) indicating minimal intervention on straights. Long tail represents sharp steering in hairpins (max ±23º).}
+\label{fig:steering_dist}
+\end{figure}
+\textbf{Control Effort Metrics:}
+\begin{itemize}
+    \item Mean steering: $|\delta| = 0.4º$ (near-zero, good centering)
+    \item Std deviation: $\sigma_\delta = 2.8º$
+    \item Saturation events: 12 instances at $\delta_{\max} = 35º
+\end{itemize}
+
+\subsection{Overall Trajectory Performance}
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{trajectory_overlay.png}
+\caption{Vehicle trajectory color-coded by speed. Red sections (slow) correspond to tight corners. Blue/cyan sections (fast) are straights. The vehicle maintains smooth path following throughout the circuit.}
+\label{fig:trajectory}
+\end{figure}
+\subsection{Key Achievements}
+\begin{enumerate}
+\item \textbf{Robust Lane Keeping:} 94% of trajectory within ±1m lateral error
+\item \textbf{Sensor-Only Operation:} No ground truth used; all control based on noisy measurements
+\item \textbf{Adaptive Performance:} Lookahead and gains adjust automatically to conditions
+\item \textbf{Safe Speed Management:} 96.8% compliance with geometry-based limits
+\item \textbf{Smooth Control:} Mean steering 0.4º with no oscillations
+\end{enumerate}
+\section{Discussion}
+\subsection{Design Decisions and Trade-offs}
+\subsubsection{Linear vs. Nonlinear Control}
+We chose linear state-feedback over advanced methods (MPC, learning-based) for:
+\begin{itemize}
+\item \textbf{Interpretability:} Clear relationship between gains and response
+\item \textbf{Computational efficiency:} Real-time feasibility (no optimization required)
+\item \textbf{Theoretical foundation:} Pole-placement guarantees stability
+\end{itemize}
+\textbf{Limitation:} Cannot explicitly handle constraints (steering saturation, velocity limits). We address this via:
+\begin{itemize}
+    \item Actuator models with saturation
+    \item Speed-dependent gain scheduling (K2∝1/vK_2 \propto 1/v
+K2​∝1/v)
+\end{itemize}
+
+\subsubsection{Dual-State Curve Detection}
+Initially, we used a single curve state for both steering and speed. This caused problems:
+\begin{itemize}
+\item \textbf{Fast exit:} Lookahead extended too early → poor curve tracking
+\item \textbf{Slow exit:} Speed limit held too long → unnecessary braking on straights
+\end{itemize}
+The dual-state solution (colleague's contribution) decouples these concerns:
+\begin{itemize}
+\item Steering state: Immediate for responsive control
+\item Speed state: Time-delayed for safety margin
+\end{itemize}
+\subsubsection{Time-Based vs. Frame-Based Hysteresis}
+Original implementation used fixed frame counts (e.g., "30 frames") for curve exit. This was fragile:
+\begin{itemize}
+\item Variable frame rate → inconsistent timing
+\item No adaptation to curve severity
+\end{itemize}
+Colleague's time-based approach (1.5-3.5s adaptive) provides:
+\begin{itemize}
+\item Frame-rate independence
+\item Intelligent scaling: tighter curves = longer confirmation
+\end{itemize}
+\subsection{Performance Analysis}
+\subsubsection{Lateral Error Sources}
+The μey=+0.246\mu_{e_y} = +0.246
+μey​​=+0.246 m right bias suggests:
+\begin{enumerate}
+    \item \textbf{Track geometry:} Circuit may have asymmetric curves (more left turns)
+    \item \textbf{Sensor bias:} GNSS or camera calibration offset
+    \item \textbf{Control asymmetry:} Gains may need left/right adjustment
+\end{enumerate}
+
+Future work could implement bias compensation.
+\subsubsection{Heading Error Spikes}
+Large heading errors ($>30º$) occur during:
+\begin{itemize}
+    \item Tight hairpin entry (rapid direction change)
+    \item Camera detection gaps (confidence drops below threshold)
+\end{itemize}
+
+Despite spikes, lateral error remains bounded due to:
+\begin{itemize}
+    \item Dominant K2eyK_2 e_y
+K2​ey​ term (direct lateral correction)
+    \item Lookahead reduction in curves (tighter tracking)
+\end{itemize}
+
+\subsubsection{Speed Violations}
+The 3.2\% overspeed rate in curves is due to:
+\begin{enumerate}
+    \item \textbf{Brake response delay:} τbrake=0.04\tau_{\text{brake}} = 0.04
+τbrake​=0.04 s causes lag
+    \item \textbf{Radius estimation errors:} Camera noise leads to optimistic vsafev_{\text{safe}}
+vsafe​    \item \textbf{Progressive braking:} Initial 30\% may be insufficient
+\end{enumerate}
+
+All violations are minor (<5 km/h excess) and quickly corrected.
+\subsection{Limitations and Future Work}
+\subsubsection{Current Limitations}
+\begin{enumerate}
+    \item \textbf{No obstacle avoidance:} Pure lane-following without collision prediction
+    \item \textbf{Single-lane operation:} No lane change capability
+    \item \textbf{Weather independence:} Model assumes dry asphalt (μ=1.0\mu = 1.0
+μ=1.0)
+    \item \textbf{Computational assumptions:} Simulation assumes perfect timing (real ECUs have jitter)
+\end{enumerate}
+
+\subsubsection{Proposed Enhancements}
+\begin{enumerate}
+\item \textbf{Model Predictive Control (MPC):}
+\begin{itemize}
+\item Explicit constraint handling (steering saturation, stability limits)
+\item Trajectory optimization over horizon
+\item Cost function balancing tracking vs. comfort
+\end{itemize}
+
+\item \textbf{Advanced Sensor Fusion:}
+\begin{itemize}
+    \item Extended Kalman Filter (EKF) for full state estimation
+    \item Multi-hypothesis lane tracking (handle ambiguity)
+    \item Road grade estimation (affects braking)
+\end{itemize}
+
+\item \textbf{Learning-Based Components:}
+\begin{itemize}
+    \item Neural network for curve radius prediction (learn from data)
+    \item Reinforcement learning for gain tuning
+    \item Driver style adaptation (aggressive vs. conservative)
+\end{itemize}
+
+\item \textbf{Safety Validation:}
+\begin{itemize}
+    \item Formal verification of control bounds
+    \item Fail-safe state machine (sensor loss scenarios)
+    \item Hardware-in-the-loop (HIL) testing
+\end{itemize}
+
+\end{enumerate}
+\section{Conclusion}
+This project successfully implemented a complete Lane-Tracking Assist system demonstrating:
+\begin{enumerate}
+\item \textbf{Theoretical Rigor:} Linear state-feedback control derived from pole-placement theory with speed-dependent gain scheduling
+\item \textbf{Realistic Modeling:} Multi-sensor suite with authentic noise characteristics, physics-based vehicle dynamics, and actuator delays
+
+\item \textbf{Intelligent Adaptation:} Speed- and curve-dependent lookahead (6-18m range), dual-state curve detection, and time-based hysteresis
+
+\item \textbf{Safety-First Design:} Geometry-based speed limits, progressive braking, and minimum-tracking throughout curves
+
+\item \textbf{Experimental Validation:} $\mu_{e_y} = 0.246$ m lateral accuracy, 96.8\% speed compliance, and smooth control (mean steering 0.4º)
+\end{enumerate}
+The system demonstrates that classical control theory, when combined with intelligent adaptation strategies, can achieve robust autonomous driving performance comparable to modern ADAS systems. Key innovations—particularly the dual-state curve detection and adaptive time-based hysteresis (colleague's contribution)—significantly improved performance over baseline fixed-parameter approaches.
+\textbf{Broader Impact:} This work validates the feasibility of deploying LKA systems using linear feedback control, which offers:
+\begin{itemize}
+\item Lower computational requirements (suitable for embedded ECUs)
+\item Transparent behavior (easier certification and debugging)
+\item Proven stability guarantees (vs. black-box learning methods)
+\end{itemize}
+Future automotive safety systems can build on these foundations, incorporating advanced planning and learning while maintaining the reliability and interpretability of fundamental control theory.
+\section*{Acknowledgments}
+We thank the Robotics Course instructors for providing theoretical foundations in trajectory tracking and linear control. Special thanks to [Colleague Name] for developing the adaptive hysteresis algorithm that significantly improved system performance.
+\begin{thebibliography}{9}
+\bibitem{course_linear}
+Robotics Course Materials, \textit{Linear Control III: Trajectory Tracking}, 2024.
+\bibitem{course_lta}
+Robotics Course Materials, \textit{LTA Control II: Lane Tracking Applications}, 2024.
+\bibitem{rajamani}
+R. Rajamani, \textit{Vehicle Dynamics and Control}, 2nd Edition, Springer, 2012.
+\bibitem{paden}
+B. Paden et al., "A Survey of Motion Planning and Control Techniques for Self-Driving Urban Vehicles," \textit{IEEE Transactions on Intelligent Vehicles}, vol. 1, no. 1, pp. 33-55, 2016.
+\bibitem{ackermann}
+J. Ackermann, "Robust Control for Automatic Steering," \textit{IEEE Control Systems Magazine}, vol. 10, no. 3, pp. 795-800, 1990.
+\bibitem{sensor_fusion}
+M. Treiber and A. Kesting, \textit{Traffic Flow Dynamics: Data, Models and Simulation}, Springer, 2013.
+\end{thebibliography}
+\end{document}

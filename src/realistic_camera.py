@@ -299,8 +299,30 @@ class RealisticCameraSensor:
             
             left_pts, center_pts, right_pts = item['data']
             
-            # Ensure boundaries are ordered correctly relative to car
-            left_pts, center_pts, right_pts = self._enforce_boundary_order(left_pts, center_pts, right_pts)
+            # === CAR-RELATIVE BOUNDARY SORTING ===
+            # Calculate lateral offset of each boundary from car's perspective
+            # Positive = left of car, Negative = right of car
+            offsets = {
+                'track_left': self._get_boundary_lateral_offset(left_pts),
+                'track_center': self._get_boundary_lateral_offset(center_pts),
+                'track_right': self._get_boundary_lateral_offset(right_pts)
+            }
+            
+            # Sort boundaries by lateral position (most positive = leftmost from car's view)
+            sorted_boundaries = sorted(
+                [('track_left', left_pts), ('track_center', center_pts), ('track_right', right_pts)],
+                key=lambda x: offsets[x[0]],
+                reverse=True  # Descending: left → center → right
+            )
+            
+            # Assign car-relative labels (automatically handles U-turns!)
+            left_pts = sorted_boundaries[0][1]    # Most positive offset (leftmost)
+            center_pts = sorted_boundaries[1][1]  # Middle offset
+            right_pts = sorted_boundaries[2][1]   # Most negative offset (rightmost)
+            
+            # Debug output (optional - comment out after testing)
+            # print(f"Offsets: L={offsets['track_left']:+.1f}m, C={offsets['track_center']:+.1f}m, R={offsets['track_right']:+.1f}m")
+            # print(f"Sorted order: {[name for name, _ in sorted_boundaries]}")
 
             # Determine current lane based on distance to lane boundaries
             cam_x, cam_y, _ = self.get_camera_position()
@@ -379,17 +401,6 @@ class RealisticCameraSensor:
             return left_pts, center_pts, right_pts
         
         return self.last_measurement
-
-    def _enforce_boundary_order(self, left_pts, center_pts, right_pts):
-        """Swap left/right if detections appear reversed in car frame."""
-        left_offset = self._closest_boundary_offset(left_pts)
-        right_offset = self._closest_boundary_offset(right_pts)
-
-        # If both present and left is not actually left of right, swap
-        if left_offset is not None and right_offset is not None:
-            if left_offset <= right_offset:
-                return right_pts, center_pts, left_pts
-        return left_pts, center_pts, right_pts
     
     def _perform_detection_realistic(self, track):
         """
@@ -670,6 +681,62 @@ class RealisticCameraSensor:
         if best is None:
             return None
         return best[1]
+    
+    def _get_boundary_lateral_offset(self, boundary_points):
+        """
+        Calculate average lateral offset of boundary from car.
+        Uses vector projection onto car's left direction.
+        
+        Returns:
+            float: Lateral offset in meters (positive = left, negative = right)
+                Returns 0.0 if boundary is empty
+        """
+        if not boundary_points:
+            return 0.0
+        
+        car_x = self.car.x
+        car_y = self.car.y
+        car_theta = self.car.theta
+        
+        # Car's left direction vector (perpendicular to heading)
+        # If car points at angle θ, left is at θ + 90°
+        left_x = -np.sin(car_theta)
+        left_y = np.cos(car_theta)
+        
+        # Car's forward direction vector
+        forward_x = np.cos(car_theta)
+        forward_y = np.sin(car_theta)
+        
+        # Sample points for offset calculation
+        # Use up to 15 points spread across the boundary for robustness
+        sample_size = min(15, len(boundary_points))
+        step = max(1, len(boundary_points) // sample_size)
+        sampled_points = boundary_points[::step][:sample_size]
+        
+        lateral_offsets = []
+        
+        for point_data in sampled_points:
+            px, py = point_data[0], point_data[1]
+            
+            # Vector from car to point
+            dx = px - car_x
+            dy = py - car_y
+            
+            # Check if point is reasonably ahead (within ±90° of forward direction)
+            forward_proj = dx * forward_x + dy * forward_y
+            
+            # Only use points that are ahead or slightly behind
+            # This filters out points from opposite side of track during U-turns
+            if forward_proj > -5.0:  # Allow 5m behind for near points
+                # Project onto left direction
+                lateral = dx * left_x + dy * left_y
+                lateral_offsets.append(lateral)
+        
+        # Return median for robustness against outliers
+        if lateral_offsets:
+            return float(np.median(lateral_offsets))
+        else:
+            return 0.0
     
     def get_field_of_view(self):
         """Return horizontal FOV for visualization"""

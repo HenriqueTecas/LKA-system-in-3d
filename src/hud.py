@@ -160,7 +160,7 @@ class HUD:
             f"Limits: steer {'SAT' if getattr(car, 'steering_saturated', False) else 'OK'} | vel {'SAT' if getattr(car, 'velocity_saturated', False) else 'OK'}",
         ]
 
-        y = HEIGHT - 100
+        y = HEIGHT - 160
         for text in texts:
             rendered = self.font.render(text, True, WHITE)
             # Background

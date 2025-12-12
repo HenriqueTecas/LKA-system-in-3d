@@ -42,15 +42,15 @@ class LinearLKAController:
         self.min_points_for_direction = 4
 
         # Linear control gains from slides (Linear Control III)
-        self.zeta = 0.8  # Damping ratio for pole placement
-        self.omega_n = 1.2  # Natural frequency
+        self.zeta = 0.8 # Damping ratio for pole placement
+        self.omega_n = 1.2 # Natural frequency
         
         # Speed-adaptive lookahead (inspired by MPC horizon concept)
         # Lookahead = base_time * velocity, clamped to [min, max]
         self.lookahead_time_straight = 1.0  # seconds for straights
         self.lookahead_time_curve = 0.3  # seconds for curves (much tighter)
         self.lookahead_min = 2.0  # minimum lookahead distance (m)
-        self.lookahead_max_straight = 18.0  # maximum lookahead on straights (m)
+        self.lookahead_max_straight = 25.0  # maximum lookahead on straights (m)
         self.lookahead_max_curve = 6.0  # maximum lookahead in curves (reduced)
         
         # Engagement thresholds
@@ -70,6 +70,8 @@ class LinearLKAController:
         self.curve_exit_time_min = 1.5  # Minimum time to confirm straight (seconds)
         self.curve_exit_time_max = 3.5  # Maximum time to confirm straight (seconds)
         self.curve_exit_radius_factor = 1.5  # Must be 1.5x threshold to start counting
+
+        # (Adaptive lookahead only; no persistent straight-locking flag)
 
         # State
         self.last_omega = 0.0  # Last angular velocity command
@@ -225,6 +227,8 @@ class LinearLKAController:
         current_lookahead = lookahead_time * max(abs(current_speed), 1.0)
         current_lookahead = np.clip(current_lookahead, self.lookahead_min, lookahead_max)
 
+        # (Adaptive lookahead remains velocity-dependent and clamped)
+
         # Find goal point using lookahead (from slides: LTA control II)
         # (x_g, y_g) = point on centerline furthest from lane boundaries
         # (x_la, y_la) = (x_g, y_g) + v_la in direction of centerline
@@ -336,32 +340,23 @@ class LinearLKAController:
         return centerline[-1]
     
     def _compute_goal_heading(self, centerline, goal_point):
-        """Compute tangent direction at goal point."""
-        if len(centerline) < 2:
+        """
+        Compute goal heading as the direction from car to lookahead point.
+        This is always correct regardless of travel direction along centerline.
+        """
+        if goal_point is None:
             return 0.0
         
-        # Find closest segment to goal point
+        car_x = self._state.get('x', self.car.x)
+        car_y = self._state.get('y', self.car.y)
+        
         gx, gy = goal_point
-        min_dist = float('inf')
-        best_idx = 0
         
-        for i in range(len(centerline) - 1):
-            px, py = centerline[i]
-            dist = (px - gx) ** 2 + (py - gy) ** 2
-            if dist < min_dist:
-                min_dist = dist
-                best_idx = i
+        # Direction from car to goal point
+        # This automatically handles any travel direction!
+        theta_goal = np.arctan2(gy - car_y, gx - car_x)
         
-        # Use vector to next point for heading
-        if best_idx < len(centerline) - 1:
-            p1 = centerline[best_idx]
-            p2 = centerline[best_idx + 1]
-            return np.arctan2(p2[1] - p1[1], p2[0] - p1[0])
-        else:
-            # Last point: use previous segment
-            p1 = centerline[-2]
-            p2 = centerline[-1]
-            return np.arctan2(p2[1] - p1[1], p2[0] - p1[0])
+        return theta_goal
 
     # ------------------------------------------------------------------
     # Curve state detection (used by both steering and speed control)
@@ -433,12 +428,20 @@ class LinearLKAController:
                         self.in_curve_speed = False
                         self.straight_start_time = None
                         self.curve_min_radius = float('inf')
+                        # Mark that we've just exited a curve so steering lookahead
+                        # can be locked to the straight maximum for improved preview.
+                        self.just_exited_curve = True
                 else:
                     # Radius dropped below exit threshold - reset timer
                     self.straight_start_time = None
             else:
                 # Not in curve - ensure timer is reset
                 self.straight_start_time = None
+
+            # If we detect a curve again, clear the just_exited flag so lookahead
+            # returns to normal curve behaviour.
+            if curve_radius < self.curve_threshold:
+                self.just_exited_curve = False
 
     # ------------------------------------------------------------------
     # Speed control (lane geometry based)
