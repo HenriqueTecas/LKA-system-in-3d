@@ -3,12 +3,9 @@ Track Module - São Paulo F1 Circuit
 Part of the 3D Robotics Lab simulation.
 """
 
-import pygame
-from pygame.locals import *
 from OpenGL.GL import *
-from OpenGL.GLU import *
 import numpy as np
-from scipy import interpolate
+from .glu_fallback import draw_sphere
 
 
 class SaoPauloTrack:
@@ -20,7 +17,7 @@ class SaoPauloTrack:
     def __init__(self, offset_x=500, offset_y=500):
         self.offset_x = offset_x
         self.offset_y = offset_y
-        self.lane_width = 48  # 4 meters per lane at 12 pixels/meter
+        self.lane_width = 60  # 5 meters per lane at 12 pixels/meter
         self.track_width = 2 * self.lane_width  # 10 meters total (120 pixels)
 
         # Scale factor to achieve 4309m lap length
@@ -29,8 +26,8 @@ class SaoPauloTrack:
         # Scale: 51,708 / 2663.2 ≈ 19.4
         scale = 19.4
         
-        # Base centerline coordinates (original track shape - control points)
-        control_points = [
+        # Base centerline coordinates (original track shape)
+        self.centerline = [
             (800, 600), (750, 500), (650, 400), (550, 350), (450, 330),
             (350, 300), (250, 250), (200, 180), (180, 120), (200, 60),
             (300, 30), (500, 30), (700, 30), (900, 30), (1100, 50),
@@ -38,13 +35,8 @@ class SaoPauloTrack:
             (1100, 550), (1000, 600), (900, 600), (800, 600),
         ]
 
-        # Scale control points
-        control_points = [(x * scale + offset_x, y * scale + offset_y)
-                         for x, y in control_points]
-        
-        # Use control points directly as centerline
-        self.centerline = control_points
-
+        self.centerline = [(x * scale + offset_x, y * scale + offset_y)
+                          for x, y in self.centerline]
 
     def _offset_line(self, points, offset):
         """Offset a line perpendicular to its direction"""
@@ -93,6 +85,96 @@ class SaoPauloTrack:
         y = start_point[1] + offset * np.sin(perp_angle)
 
         return x, y, theta
+
+    def find_closest_point_on_track(self, x, y):
+        """Find the closest point on the track centerline and return (index, distance)"""
+        min_dist = float('inf')
+        closest_idx = 0
+        
+        for i, (cx, cy) in enumerate(self.centerline):
+            dist = np.sqrt((cx - x)**2 + (cy - y)**2)
+            if dist < min_dist:
+                min_dist = dist
+                closest_idx = i
+        
+        return closest_idx, min_dist
+
+    def calculate_curve_radius_at_index(self, idx):
+        """Calculate curve radius using 3-point circle fit at given centerline index"""
+        n = len(self.centerline)
+        
+        # Use points before, at, and after the index
+        # Wrap around for closed track
+        idx_prev = (idx - 2) % n
+        idx_curr = idx % n
+        idx_next = (idx + 2) % n
+        
+        x1, y1 = self.centerline[idx_prev]
+        x2, y2 = self.centerline[idx_curr]
+        x3, y3 = self.centerline[idx_next]
+        
+        # Three-point circle fit
+        a = x1 - x2
+        b = y1 - y2
+        c = x1 - x3
+        d = y1 - y3
+        e = a * (x1 + x2) + b * (y1 + y2)
+        f = c * (x1 + x3) + d * (y1 + y3)
+        g = 2 * (a * (y3 - y2) - b * (x3 - x2))
+        
+        if abs(g) < 1e-6:
+            return float('inf')  # Straight line
+        
+        cx = (d * e - b * f) / g
+        cy = (a * f - c * e) / g
+        radius = np.sqrt((x1 - cx)**2 + (y1 - cy)**2)
+        
+        return max(radius, 1.0)
+
+    def get_minimum_radius_ahead(self, x, y, lookahead_distance):
+        """
+        Get minimum curve radius within lookahead distance ahead of current position.
+        
+        Args:
+            x, y: Current vehicle position
+            lookahead_distance: Distance to look ahead along track (in pixels)
+        
+        Returns:
+            (min_radius, distance_to_min): Minimum radius found and how far ahead it is
+        """
+        closest_idx, _ = self.find_closest_point_on_track(x, y)
+        
+        min_radius = float('inf')
+        distance_to_min = 0.0
+        accumulated_dist = 0.0
+        
+        n = len(self.centerline)
+        i = closest_idx
+        
+        # Walk forward along the track
+        while accumulated_dist < lookahead_distance:
+            next_i = (i + 1) % n
+            
+            # Calculate distance to next point
+            x1, y1 = self.centerline[i]
+            x2, y2 = self.centerline[next_i]
+            segment_dist = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+            
+            # Calculate radius at this point
+            radius = self.calculate_curve_radius_at_index(i)
+            
+            if radius < min_radius:
+                min_radius = radius
+                distance_to_min = accumulated_dist
+            
+            accumulated_dist += segment_dist
+            i = next_i
+            
+            # Safety: prevent infinite loop
+            if i == closest_idx and accumulated_dist > 0:
+                break
+        
+        return min_radius, distance_to_min
 
     def draw_3d(self):
         """Draw track in 3D"""
@@ -358,9 +440,7 @@ class SaoPauloTrack:
         # Draw sphere at top - OPTIMIZED: reduced from 8,8 to 6,6
         glPushMatrix()
         glTranslatef(x, y, height)
-        quadric = gluNewQuadric()
-        gluSphere(quadric, 3, 6, 6)  # Reduced detail for performance
-        gluDeleteQuadric(quadric)
+        draw_sphere(3, 6, 6)  # Reduced detail for performance
         glPopMatrix()
 
     def _draw_sector_number(self, x, y, height, number):
@@ -371,9 +451,7 @@ class SaoPauloTrack:
 
         glPushMatrix()
         glTranslatef(x, y, height)
-        quadric = gluNewQuadric()
-        gluSphere(quadric, 5, 6, 6)  # Reduced detail for performance
-        gluDeleteQuadric(quadric)
+        draw_sphere(5, 6, 6)  # Reduced detail for performance
         glPopMatrix()
 
     def _draw_direction_arrow(self, x, y, dx, dy):
@@ -498,9 +576,7 @@ class SaoPauloTrack:
         # Tree foliage (green sphere) - reduced detail
         glColor3f(0.1, 0.5, 0.1)
         glTranslatef(0, 0, trunk_height)
-        quadric = gluNewQuadric()
-        gluSphere(quadric, 8, 4, 4)  # Reduced from 6,6 to 4,4
-        gluDeleteQuadric(quadric)
+        draw_sphere(8, 4, 4)  # Reduced from 6,6 to 4,4
 
         glPopMatrix()
 
@@ -534,9 +610,7 @@ class SaoPauloTrack:
         glTranslatef(0, 0, sign_height/2 + 2)
         color_intensity = (distance % 500) / 500.0
         glColor3f(1.0, color_intensity, 0.0)
-        quadric = gluNewQuadric()
-        gluSphere(quadric, 2, 4, 4)  # OPTIMIZED: reduced from 6,6 to 4,4
-        gluDeleteQuadric(quadric)
+        draw_sphere(2, 4, 4)  # OPTIMIZED: reduced from 6,6 to 4,4
 
         glPopMatrix()
 
@@ -614,5 +688,3 @@ class SaoPauloTrack:
                 glEnd()
 
         glPopMatrix()
-
-

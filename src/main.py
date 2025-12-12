@@ -9,11 +9,15 @@ import pygame
 from pygame.locals import *
 from OpenGL.GL import *
 from OpenGL.GLU import *
-import numpy as np
 import sys
 import os
 import platform
 import time
+
+# Allow running as a script (`python main.py` or `python -m main`)
+if __package__ is None or __package__ == "":
+    sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    __package__ = "src"
 
 # Import configuration
 from .config import *
@@ -22,13 +26,14 @@ from .config import *
 from .car import Car
 #from .camera_sensor import CameraSensor
 from .realistic_camera import RealisticCameraSensor
-from .lka_controller import PurePursuitLKA
-from .mpc_controller import MPCLaneKeeping
-from .hybrid_controller import HybridLaneController
+from .linear_lka import LinearLKAController
+from .sensors import SensorSuite
 from .track import SaoPauloTrack
 from .renderer import Renderer3D
 from .minimap import Minimap
 from .hud import HUD
+from .lane_logger import LaneDetectionLogger
+from .lka_logger import LKAPerformanceLogger
 
 
 def init_display():
@@ -86,8 +91,35 @@ def init_display():
     return screen
 
 
+def prompt_float(prompt, default):
+    try:
+        raw = input(f"{prompt} [{default}]: ").strip()
+        if raw == "":
+            return default
+        return float(raw)
+    except Exception:
+        return default
+
+
+def starter_menu():
+    """Simple console menu to tweak key parameters before launching."""
+    print("\n=== Parameter Menu (press Enter to keep defaults) ===")
+    params = {}
+    params["INPUT_STEER_RATE"] = prompt_float("Manual steer rate (rad/s)", INPUT_STEER_RATE)
+    params["INPUT_STEER_DEADZONE"] = prompt_float("Steer deadzone (rad)", INPUT_STEER_DEADZONE)
+    params["THROTTLE_TAU"] = prompt_float("Throttle response time (sec, 0=instant)", THROTTLE_TAU)
+    params["BRAKE_TAU"] = prompt_float("Brake response time (sec, 0=instant)", BRAKE_TAU)
+    params["STABILITY_MAX_LAT_ACCEL_G"] = prompt_float("Stability lateral accel cap (g)", STABILITY_MAX_LAT_ACCEL_G)
+    print("====================================================\n")
+    return params
+
+
 def main():
     """Main simulation loop."""
+    overrides = starter_menu()
+    # Refresh module-level constants if user changed them
+    for key, value in overrides.items():
+        globals()[key] = value
     # Initialize display
     screen = init_display()
     clock = pygame.time.Clock()
@@ -98,6 +130,12 @@ def main():
     # Create car
     start_x, start_y, start_theta = track.get_start_position(lane_number=1)  # Start in lane 1 (negative offset = LEFT of centerline)
     car = Car(start_x, start_y, start_theta)
+    # Apply runtime overrides to car instance
+    car.input_steer_rate = overrides["INPUT_STEER_RATE"]
+    car.input_steer_deadzone = overrides["INPUT_STEER_DEADZONE"]
+    car.throttle_tau = overrides["THROTTLE_TAU"]
+    car.brake_tau = overrides["BRAKE_TAU"]
+    car.stability_lat_accel_g = overrides["STABILITY_MAX_LAT_ACCEL_G"]
     car.track = track  # Store reference for camera
 
     # Create camera sensor - USING SIMPLE CAMERA (realistic has issues)
@@ -106,12 +144,11 @@ def main():
     camera = RealisticCameraSensor(car)
     # To use simple camera: camera = CameraSensor(car)
 
-    # Create LKA controllers
-    lka = PurePursuitLKA(car, camera)
-    mpc = MPCLaneKeeping(car, camera)
-    
-    # Create Hybrid Controller (new 3-mode system)
-    hybrid = HybridLaneController(car, camera)
+    # Simulated ego sensors (IMU, GNSS, wheel encoder)
+    sensors = SensorSuite(car)
+
+    # Create LKA controller
+    lka = LinearLKAController(car, camera, sensors=sensors, track=track)
 
     # Create renderer
     renderer = Renderer3D(WIDTH, HEIGHT)
@@ -121,21 +158,25 @@ def main():
 
     # Create HUD
     hud = HUD()
+    lane_logger = LaneDetectionLogger()
+    
+    # Create LKA performance logger
+    lka_logger = LKAPerformanceLogger(log_dir="logs")
+    hud.lka_logger = lka_logger  # Connect logger to HUD for metrics display
 
     # Pre-allocate texture for overlay (performance optimization)
     overlay_texture_id = glGenTextures(1)
 
     # PERFORMANCE: Pre-allocate overlay surface (reused every frame)
     overlay_surface = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    last_detections = ([], [], [])
+    lka_warnings = {}
 
     # Main loop -> fixed-timestep physics + rendering
     running = True
     physics_dt = PHYSICS_DT
     accumulator = 0.0
     prev_time = time.perf_counter()
-    
-    # Initialize hybrid controller warnings
-    hybrid_warnings = {}
 
     while running:
         # Time management
@@ -155,22 +196,36 @@ def main():
                 if event.key == pygame.K_ESCAPE:
                     running = False
                 elif event.key == pygame.K_1:
-                    # Hybrid Mode 1: MANUAL (no assistance)
-                    hybrid.set_mode(HybridLaneController.MODE_MANUAL)
+                    lka.set_mode(LinearLKAController.MODE_MANUAL)
                 elif event.key == pygame.K_2:
-                    # Hybrid Mode 2: WARNING (monitoring only)
-                    hybrid.set_mode(HybridLaneController.MODE_WARNING)
+                    lka.set_mode(LinearLKAController.MODE_WARNING)
                 elif event.key == pygame.K_3:
-                    # Hybrid Mode 3: ASSIST (active control)
-                    hybrid.set_mode(HybridLaneController.MODE_ASSIST)
+                    lka.set_mode(LinearLKAController.MODE_ASSIST)
+                elif event.key == pygame.K_l:
+                    # Save session and generate plots, then close application
+                    print("\n[LOG] Saving session and generating plots...")
+                    lka_logger.print_summary()
+                    session_file = lka_logger.save_session()
+                    
+                    # Try to generate plots
+                    try:
+                        from .lka_logger import LKAVisualizationGenerator
+                        viz = LKAVisualizationGenerator(session_file)
+                        viz.generate_all_plots(output_dir="plots")
+                        print("[LOG] Plots saved successfully.")
+                    except ImportError:
+                        print("[LOG] Could not import visualization generator.")
+                    except Exception as e:
+                        print(f"[LOG] Error generating plots: {e}")
+                    
+                    # Close application after saving
+                    print("[LOG] Closing application...")
+                    running = False
                 elif event.key == pygame.K_c:
-                    # Toggle camera view
                     if renderer.camera_view_mode == "chase":
                         renderer.camera_view_mode = "realistic"
-                        print("[Camera] Switched to REALISTIC camera view (lane detection POV)")
                     else:
                         renderer.camera_view_mode = "chase"
-                        print("[Camera] Switched to CHASE camera view")
 
         # Capture current key state (will be used during physics steps)
         keys = pygame.key.get_pressed()
@@ -178,39 +233,36 @@ def main():
         # Run physics updates at fixed timestep. Controllers and vehicle state
         # are advanced in these steps so their timing is deterministic.
         while accumulator >= physics_dt:
+            # Update simulated sensors before using them for control
+            sensors.update(physics_dt, current_time)
             # Detect lanes once per physics step (shared by controllers and visualization)
-            camera.detect_lanes(track)
-            
-            # === HYBRID CONTROLLER (new 3-mode system) ===
-            hybrid_steering, hybrid_throttle, hybrid_brake, hybrid_warnings = hybrid.calculate_control(track)
-            
-            # Calculate LKA steering (Pure Pursuit or MPC) at physics rate
-            lka_steering = None
-            if lka.active:
-                lka_steering = lka.calculate_steering(track)
-            elif mpc.active:
-                lka_steering = mpc.calculate_steering(track)
+            left_lane, center_lane, right_lane = camera.detect_lanes(track)
+            last_detections = (left_lane, center_lane, right_lane)
+            lane_logger.log_detection(car, camera, left_lane, center_lane, right_lane)
 
-            # Update car (use hybrid control if active, otherwise fallback to old LKA)
-            if hybrid.mode != HybridLaneController.MODE_MANUAL:
-                # Hybrid controller is active (warning or assist mode)
-                # In assist mode, it provides steering/throttle/brake
-                # In warning mode, it provides None but warnings are shown
-                active_lka = hybrid
-                if hybrid.mode == HybridLaneController.MODE_ASSIST and hybrid_steering is not None:
-                    # Use hybrid's steering command
-                    if hybrid_brake is not None and hybrid_brake > 0:
-                        # print(f"[MAIN] Passing to car.update: throttle={hybrid_throttle}, brake={hybrid_brake}")
-                        pass
-                    car.update(physics_dt, keys, hybrid_steering, active_lka, 
-                              override_throttle=hybrid_throttle, override_brake=hybrid_brake)
-                else:
-                    # Warning mode or no steering available - manual control
-                    car.update(physics_dt, keys, None, active_lka)
-            else:
-                # Manual mode or old LKA controllers
-                active_lka = lka if lka.active else (mpc if mpc.active else None)
-                car.update(physics_dt, keys, lka_steering, active_lka)
+            # LKA controller (3 modes)
+            lka_steering, lka_throttle, lka_brake, lka_warnings, lka_intervening = lka.calculate_control(track)
+            
+            # Log LKA performance metrics (only when LKA is active)
+            if lka.mode != LinearLKAController.MODE_MANUAL:
+                lka_logger.log_frame(current_time, car, lka, lka_warnings)
+
+            # Update car (LKA overrides pedals in ASSIST mode)
+            # Override steering when controller is intervening OR any warnings are active
+            should_override_steer = False
+            if lka.mode == LinearLKAController.MODE_ASSIST:
+                lane_warn = lka_warnings.get("lane_departure") or lka_warnings.get("time_to_crossing")
+                speed_warn = lka_warnings.get("speed_too_high")
+                should_override_steer = lka_intervening or lane_warn or speed_warn
+
+            car.update(
+                physics_dt,
+                keys,
+                lka_steering if should_override_steer else None,
+                override_throttle=lka_throttle if lka.mode == LinearLKAController.MODE_ASSIST else None,
+                override_brake=lka_brake if lka.mode == LinearLKAController.MODE_ASSIST else None,
+                force_autosteer=should_override_steer,
+            )
 
             # Collision detection disabled for open-world driving
             # if not car.is_on_track(track):
@@ -221,7 +273,7 @@ def main():
         # === 3D RENDERING ===
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT)
 
-        # Setup 3D view (pass camera for realistic view option)
+        # Setup 3D view (supports camera toggle)
         renderer.setup_3d_view(car, camera)
 
         # Draw track
@@ -230,14 +282,8 @@ def main():
         # Draw lane markers
         renderer.draw_lane_markers_3d(camera, track)
 
-        # Draw Pure Pursuit lookahead points (yellow)
-        renderer.draw_lookahead_point_3d(lka)
-
-        # Draw MPC predicted trajectory (silver)
-        renderer.draw_mpc_trajectory_3d(mpc)
-
-        # Draw Hybrid Controller target point and direction (yellow)
-        renderer.draw_hybrid_target_3d(hybrid, car)
+        # Draw LKA target/direction (yellow)
+        renderer.draw_lka_target_3d(lka, car)
 
         # Draw ONLY wheels (car body invisible for first-person view)
         car.draw_wheels_only_3d()
@@ -257,12 +303,12 @@ def main():
         # PERFORMANCE: Reuse pre-allocated surface (just clear it)
         overlay_surface.fill((0, 0, 0, 0))
 
-        # Render HUD with Hybrid Controller status
+        # Render HUD with FPS
         current_fps = clock.get_fps()
-        hud.render(overlay_surface, car, camera, current_fps, renderer.camera_view_mode, hybrid, hybrid_warnings)
+        hud.render(overlay_surface, car, camera, current_fps, renderer.camera_view_mode, lka, lka_warnings)
 
         # Render minimap (pass both controllers)
-        minimap_surface = minimap.render(car, camera, lka, mpc)
+        minimap_surface = minimap.render(car, camera, lane_measurements=last_detections)
         minimap_pos = (WIDTH - MINIMAP_SIZE - 10, 10)
 
         # Draw minimap background
@@ -273,10 +319,17 @@ def main():
 
         overlay_surface.blit(minimap_surface, minimap_pos)
 
+        # Lane detection history plot (Task 4)
+        lane_logger.draw_plot(
+            overlay_surface,
+            position=(minimap_pos[0], minimap_pos[1] + MINIMAP_SIZE + 20),
+            size=(MINIMAP_SIZE, 180),
+        )
+
         # Draw controls hint
         hint_font = pygame.font.Font(None, 20)
         hint_texts = [
-            "W/S: Accel/Brake | A/D: Steer | F: Pure Pursuit | G: MPC | ESC: Exit"
+            "W/S: Accel/Brake | A/D: Steer | 1/2/3: LKA modes | C: Toggle camera | L: Log session | ESC: Exit"
         ]
         y = HEIGHT - 30
         for hint in hint_texts:
@@ -328,6 +381,10 @@ def main():
         clock.tick(FPS)
 
     # Cleanup
+    lka_logger.print_summary()
+    lka_logger.save_session()
+    
+    lane_logger.close()
     glDeleteTextures([overlay_texture_id])
     pygame.quit()
     sys.exit()

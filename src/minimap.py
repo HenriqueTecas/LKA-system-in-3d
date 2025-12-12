@@ -68,7 +68,7 @@ class Minimap:
         map_y = (y - car_y) * self.scale + self.size / 2
         return int(map_x), int(map_y)
 
-    def render(self, car, camera, lka, mpc=None):
+    def render(self, car, camera, lane_measurements=None):
         """Render minimap with original 2D view"""
         # Fill with semi-transparent dark background
         self.surface.fill((20, 20, 20))  # Very dark gray background
@@ -81,36 +81,7 @@ class Minimap:
         self._draw_track_2d(car)
 
         # Draw camera FOV and detections
-        self._draw_camera_view_2d(camera, car)
-
-        # Draw ALL LKA lane center points (small yellow dots)
-        if lka.active and hasattr(lka, 'lane_center_points') and lka.lane_center_points:
-            for cx, cy, dist in lka.lane_center_points:
-                # Convert meters to pixels for minimap
-                px = cx * car.pixels_per_meter
-                py = cy * car.pixels_per_meter
-                center_scaled = self._world_to_minimap(px, py, car)
-                pygame.draw.circle(self.surface, (255, 255, 100), center_scaled, 3)
-
-        # Draw LKA selected lookahead point (larger, brighter)
-        if lka.active and hasattr(lka, 'lookahead_point') and lka.lookahead_point is not None:
-            lx, ly = lka.lookahead_point
-            car_scaled = self._world_to_minimap(car.get_x_pixels(), car.get_y_pixels(), car)
-            # Convert lookahead from meters to pixels
-            lx_px = lx * car.pixels_per_meter
-            ly_px = ly * car.pixels_per_meter
-            lookahead_scaled = self._world_to_minimap(lx_px, ly_px, car)
-            pygame.draw.line(self.surface, YELLOW, car_scaled, lookahead_scaled, 2)
-            pygame.draw.circle(self.surface, YELLOW, lookahead_scaled, 7)  # Larger for selected point
-
-        # Draw MPC predicted trajectory (silver/gray dots)
-        if mpc and mpc.active and hasattr(mpc, 'predicted_trajectory') and mpc.predicted_trajectory:
-            for mx, my in mpc.predicted_trajectory:
-                # Convert meters to pixels for minimap
-                px = mx * car.pixels_per_meter
-                py = my * car.pixels_per_meter
-                traj_scaled = self._world_to_minimap(px, py, car)
-                pygame.draw.circle(self.surface, (192, 192, 192), traj_scaled, 4)  # Silver
+        self._draw_camera_view_2d(camera, car, lane_measurements)
 
         # Draw car (simple representation)
         self._draw_car_2d(car)
@@ -138,7 +109,7 @@ class Minimap:
             p2 = centerline_scaled[i + 1]
             pygame.draw.line(self.surface, GRAY, p1, p2, 1)
 
-    def _draw_camera_view_2d(self, camera, car):
+    def _draw_camera_view_2d(self, camera, car, lane_measurements=None):
         """Draw camera FOV and detected lanes"""
         # Get camera position in meters, convert to pixels
         # Realistic camera returns (x, y, z), simple camera returns (x, y)
@@ -178,7 +149,10 @@ class Minimap:
         pygame.draw.line(self.surface, GREEN, camera_pos_scaled, fov_points_scaled[2], 2)
 
         # Draw detected lane points - ONLY FOR CURRENT LANE
-        left_lane, right_lane, center_lane = camera.detect_lanes(camera.car.track)
+        if lane_measurements is None:
+            left_lane, center_lane, right_lane = camera.last_measurement
+        else:
+            left_lane, center_lane, right_lane = lane_measurements
 
         # Determine which lane we're in and which boundaries to display
         current_lane = camera.current_lane
@@ -201,29 +175,21 @@ class Minimap:
         left_wheel_scaled = self._world_to_minimap(left_wheel_x, left_wheel_y, car)
         right_wheel_scaled = self._world_to_minimap(right_wheel_x, right_wheel_y, car)
 
-        # Draw left boundary of current lane with vectors from LEFT wheel
+        # Draw left boundary points (no wheel vectors to reduce clutter)
         for point in lane_left_boundary:
-            # Handle both 3-tuple and 4-tuple formats
             mx, my = point[0], point[1]
-            # Convert from meters to pixels
             px = mx * camera.car.pixels_per_meter
             py = my * camera.car.pixels_per_meter
             px_scaled, py_scaled = self._world_to_minimap(px, py, car)
             pygame.draw.circle(self.surface, (255, 0, 0), (px_scaled, py_scaled), 4)
-            # Vector from left wheel to left lane point
-            pygame.draw.line(self.surface, (255, 128, 0), left_wheel_scaled, (px_scaled, py_scaled), 1)
 
-        # Draw right boundary of current lane with vectors from RIGHT wheel
+        # Draw right boundary points (no wheel vectors to reduce clutter)
         for point in lane_right_boundary:
-            # Handle both 3-tuple and 4-tuple formats
             mx, my = point[0], point[1]
-            # Convert from meters to pixels
             px = mx * camera.car.pixels_per_meter
             py = my * camera.car.pixels_per_meter
             px_scaled, py_scaled = self._world_to_minimap(px, py, car)
             pygame.draw.circle(self.surface, (0, 128, 255), (px_scaled, py_scaled), 4)
-            # Vector from right wheel to right lane point
-            pygame.draw.line(self.surface, (0, 200, 200), right_wheel_scaled, (px_scaled, py_scaled), 1)
 
         # Draw camera position
         pygame.draw.circle(self.surface, GREEN, camera_pos_scaled, 6)
@@ -270,5 +236,4 @@ class Minimap:
         front_y = car_y_px + length_px * sin_theta
         front_minimap = self._world_to_minimap(front_x, front_y, car)
         pygame.draw.circle(self.surface, YELLOW, front_minimap, 5)
-
 
